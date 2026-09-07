@@ -1,5 +1,7 @@
 # Maplet — a local viewer for spatial single-cell data
 
+![demo_image](maplet-demo.png)
+
 A local, standalone desktop app for **interactively viewing sequenced cells in 3D** —
 their location, outline, cell-type calls, spatial barcodes, methylation, and any
 custom variables — loaded from a plain **CSV / TSV spreadsheet** (one row per cell,
