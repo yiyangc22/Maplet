@@ -1,0 +1,44 @@
+{
+  "name": "maplet",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Maplet — a local, standalone 2D/3D viewer for plotting data points onto spatial coordinate maps from a CSV/TSV table (spatial cells, cities on a map, stars in space, …).",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n vite,electron \"vite\" \"npm run dev:electron\"",
+    "dev:electron": "wait-on tcp:127.0.0.1:5173 && npm run build:electron && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "dev:web": "vite",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "npm run typecheck && vite build && npm run build:electron",
+    "app": "electron .",
+    "start": "npm run build && electron .",
+    "build:web": "vite build --mode singlefile && node scripts/finalize-standalone.mjs",
+    "sample": "node sample-data/make_sample_tsv.mjs",
+    "sample:tsv": "node sample-data/make-example-tsv.mjs"
+  },
+  "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "three": "^0.171.0",
+    "yaml": "^2.9.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.7",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/three": "^0.171.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^38.0.0",
+    "tailwindcss": "^4.1.7",
+    "typescript": "^5.8.0",
+    "vite": "^6.3.5",
+    "vite-plugin-singlefile": "^2.1.0",
+    "wait-on": "^8.0.1"
+  }
+}

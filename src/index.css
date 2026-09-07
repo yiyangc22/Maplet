@@ -1,0 +1,177 @@
+@import 'tailwindcss';
+
+:root {
+  --bg: #050505;
+  --panel: #0b0b0b;
+  --panel-2: #111111;
+  --border: #262626;
+  --border-2: #333333;
+  --text: #e6e6e6;
+  --muted: #8a8a8a;
+  --faint: #5a5a5a;
+  --accent: #ffb000; /* amber — selection / active */
+  --ok: #37d67a;
+  --warn: #ffb000;
+  --bad: #ff5c5c;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  user-select: none;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+/* Brutalist building blocks -------------------------------------------------*/
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.btn {
+  background: #000;
+  border: 1px solid var(--border-2);
+  color: var(--text);
+  padding: 4px 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.btn:hover {
+  background: #fff;
+  color: #000;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.btn:disabled:hover {
+  background: #000;
+  color: var(--text);
+}
+.btn-active {
+  background: var(--text);
+  color: #000;
+}
+
+/* Menu-bar trigger: fills the bar's full height, flush with its neighbours
+   (a hairline separates them), inverts on hover / when its menu is open. */
+.menu-btn {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px; /* a touch smaller than the 13px MAPLET label to its left */
+  white-space: nowrap;
+}
+.menu-btn:hover {
+  background: #fff;
+  color: #000;
+}
+.menu-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.menu-btn:disabled:hover {
+  background: transparent;
+  color: var(--text);
+}
+.menu-btn.active {
+  background: var(--text);
+  color: #000;
+}
+
+.chip {
+  border: 1px solid var(--border-2);
+  padding: 1px 6px;
+  color: var(--muted);
+}
+
+.field {
+  background: #000;
+  border: 1px solid var(--border-2);
+  color: var(--text);
+  padding: 3px 6px;
+}
+.field:focus {
+  outline: 1px solid var(--faint);
+}
+
+select.field option,
+select.field optgroup {
+  background: #0b0b0b;
+  color: var(--text);
+}
+
+.section-head {
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.hairline {
+  border-color: var(--border);
+}
+
+/* Range inputs --------------------------------------------------------------*/
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: var(--border-2);
+  outline: none;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--text);
+  border: 1px solid #000;
+  cursor: pointer;
+}
+input[type='range']:hover::-webkit-slider-thumb {
+  background: var(--accent);
+}
+
+/* Checkboxes ----------------------------------------------------------------*/
+input[type='checkbox'] {
+  accent-color: #cfcfcf;
+}
+
+/* Scrollbars ----------------------------------------------------------------*/
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mono-num {
+  font-variant-numeric: tabular-nums;
+}

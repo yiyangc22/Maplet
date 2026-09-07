@@ -1,0 +1,39 @@
+node_modules/
+dist/
+dist-electron/
+dist-web/
+*.log
+.DS_Store
+Thumbs.db
+.vite/
+
+# editor / local
+.vscode/
+.idea/
+.claude/
+*.local
+.env
+.env.*
+
+# Bundled portable Node (Windows-only, ~106 MB): handy locally for building /
+# previewing without a separate Node install, but NOT committed — contributors
+# install Node themselves, and end users just open MapletViewer.html.
+tools/
+
+# Raw downloaded datasets / scratch data used only to GENERATE the sample — too big to
+# commit. sample-data/make-merfish-sample.py fetches its data via squidpy; the ~6.2 MB
+# tsv it writes (sample-data/merfish-hypothalamus.cells.tsv) IS committed — that's the
+# demo dataset users download and open (no longer inlined into the app).
+examples/
+*.h5ad
+
+# Leftover sample OUTPUTS from abandoned prototypes (07 typed-header, two-row header,
+# the solar-system + zhuang demos) — not part of the release. Only the MERFISH sample
+# and its generator ship in sample-data/.
+sample-data/sample.cells.tsv
+sample-data/sample.tworow.cells.tsv
+sample-data/solar-system.cells.tsv
+sample-data/continuous-test.cells.tsv
+
+# The built single-file app IS committed (MapletViewer.html) so anyone can
+# download it and run in a browser; regenerate it with `npm run build:web`.
