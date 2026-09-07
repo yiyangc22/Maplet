@@ -24,3 +24,19 @@ The viewer draws smoothly up to **250,000 cells**. For files with greater dimens
 **Demo dataset.** [`sample-data/merfish-hypothalamus.cells.tsv`](sample-data/merfish-hypothalamus.cells.tsv) is a derived **MERFISH mouse-hypothalamus** dataset (Moffitt et al., 2018) with 73,655 cells across 12 serial sections stacked into a 3-D volume (Centroid_X/Y/Z), each with a linked **UMAP** embedding (UMAP_1/UMAP_2), 16 cell classes, 70 neuron clusters, and marker-gene + transcript gradients.
 
 > **Data attribution.** Moffitt et al., *Science* 2018, [doi:10.1126/science.aau5324](https://doi.org/10.1126/science.aau5324). Source data on Dryad ([doi:10.5061/dryad.8t8s248](https://doi.org/10.5061/dryad.8t8s248)), released under **CC0 1.0**.
+
+## Editing & rebuilding
+
+The app is one self-contained HTML file, built from the source in `src/` and `shared/`:
+
+```sh
+npm install          # once (needs Node)
+# edit source in src/ and shared/
+npm run build:web    # regenerates MapletViewer.html AND docs/index.html
+```
+
+`build:web` runs Vite (single-file mode) + `scripts/finalize-standalone.mjs`, which writes the bundle to two places: **`MapletViewer.html`** (download & run) and **`docs/index.html`** (the GitHub Pages copy). Commit both and push.
+
+**Live page:** serve `docs/` via **Settings ▸ Pages ▸ Deploy from a branch ▸ `main` / `docs`** — the app is then live at `https://yiyangc22.github.io/Maplet/`, and every rebuild-and-push updates it.
+
+Minimal files needed to rebuild: `src/`, `shared/`, `index.html`, `vite.config.ts`, `tsconfig.json`, `package.json` (+ `package-lock.json`), `scripts/finalize-standalone.mjs`. (`electron/`, `tsconfig.electron.json`, and `run-*` are only for the optional desktop build.)
