@@ -1,4 +1,6 @@
-# Maplet - a local, web-based viewer for spatial single-cell and single-molecule datasets
+# Maplet: a local, web-based viewer for spatial single-cell and single-molecule datasets
+
+[![DOI](https://zenodo.org/badge/1358373375.svg)](https://doi.org/10.5281/zenodo.22651477)
 
 ![demo_image](maplet-demo.png)
 
