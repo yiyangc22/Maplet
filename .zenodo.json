@@ -1,0 +1,14 @@
+{
+  "title": "Maplet: a local, web-based viewer for spatial single-cell and single-molecule datasets",
+  "description": "A standalone desktop web app for interactively viewing spatial sequencing and analysis results in 3D - location, outline, cell-type calls, spatial barcodes, methylation, and more.",
+  "creators": [
+    {
+      "name": "Chen, Yiyang",
+      "affiliation": "University of California, Los Angeles",
+      "orcid": "0009-0000-0498-0593"
+    }
+  ],
+  "license": "MIT",
+  "upload_type": "software",
+  "keywords": ["spatial genomics", "single-cell analysis", "data visualization", "point-cloud analysis"]
+}
