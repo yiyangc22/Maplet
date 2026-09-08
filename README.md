@@ -6,7 +6,7 @@ A standalone desktop web app for **interactively viewing spatial sequencing and 
 
 ## Core features
 
-- **One-click run** - Run `MapletViewer.html`, load your dataset (or the sample dataset at `sample-data/merfish-hypothalamus.cells.tsv`), confirm variable assignment, play.
+- **One-click run** - Go to [https://yiyangc22.github.io/Maplet/](https://yiyangc22.github.io/Maplet/) or download repository and run `MapletViewer.html`. Load your dataset (or the sample dataset at `sample-data/merfish-hypothalamus.cells.tsv`), confirm variable assignment, and play.
 - **Assign xyz on load** - A dialog lists every column with example values and a proposed role (guessed from names + values); you confirm or change each - id, a coordinate axis of **map 0** (the main viewer) or maps **1–3** (linked auxiliary viewers for a UMAP or a second assay), or a **numerical** / **categorical** variable.
 - **Color, resize, and filter by any variable** - Color by **numeric gradience** (perceptual colormap + colorbar, linear or log) or **categorical palette** with legend. Resize by **gated numeric values** with base size and min/max cut-off values. Filter by **min/max range** for numerical variables, and **search, select, and exclude** by categorical ones. Filtered-out cells can ghost or hide completely, while the "shown" count updates live with adjustments.
 - **Select & inspect** - Click a cell/data point to see its variable values; hover shows a basic tag near the cursor (ID + type); you can also select multiple cells **by the same color** - or enable **lasso tool** by holding shift key - and view the summary details of the selected group.
@@ -35,7 +35,7 @@ npm install          # once (needs Node)
 npm run build:web    # regenerates MapletViewer.html AND docs/index.html
 ```
 
-`build:web` runs Vite (single-file mode) + `scripts/finalize-standalone.mjs`, which writes the bundle to two places: **`MapletViewer.html`** (download & run) and **`docs/index.html`** (the GitHub Pages copy). Commit both and push.
+`build:web` runs Vite (single-file mode) + `scripts/finalize-standalone.mjs`, which writes the bundle to two places: **`MapletViewer.html`** (download & run) and **`docs/index.html`** (the GitHub Pages copy).
 
 **Live page:** serve `docs/` via **Settings ▸ Pages ▸ Deploy from a branch ▸ `main` / `docs`** — the app is then live at `https://yiyangc22.github.io/Maplet/`, and every rebuild-and-push updates it.
 
