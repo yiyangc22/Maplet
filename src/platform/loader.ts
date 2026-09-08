@@ -6,6 +6,9 @@
 
 import type { ImagesResult, RawMaplet } from '../../shared/types';
 import { CELL_CAP, headText, parseImagesTable } from '../../shared/table';
+// The bundled demo dataset, inlined at build time via Vite `?raw` so it loads with no
+// fetch — works from a double-clicked MapletViewer.html as well as when served.
+import merfishSampleTsv from '../../sample-data/merfish-hypothalamus.cells.tsv?raw';
 
 export function isElectron(): boolean {
   return typeof window !== 'undefined' && !!window.maplet;
@@ -13,6 +16,17 @@ export function isElectron(): boolean {
 
 export function platformLabel(): string {
   return isElectron() ? 'desktop' : 'browser';
+}
+
+// The bundled MERFISH mouse-hypothalamus demo dataset. Its text is inlined (see the
+// `?raw` import above), so it loads through the normal flow — no fetch, no file dialog.
+export async function loadSample(): Promise<RawMaplet> {
+  return {
+    source: 'sample:merfish',
+    sourceName: 'merfish-hypothalamus.cells.tsv',
+    manifestJson: '{}',
+    pointsTable: merfishSampleTsv,
+  };
 }
 
 // A quick content sniff (extension-independent): does this look like a delimited

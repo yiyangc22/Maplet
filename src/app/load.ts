@@ -55,6 +55,7 @@ async function runImages(fn: () => Promise<ImagesResult | null>): Promise<void> 
 }
 
 export const doOpen = () => run(loader.openFile, 'open');
+export const doSample = () => run(() => loader.loadSample(), 'sample');
 export const doOpenFolder = () => run(loader.openFolder, 'folder');
 export const doOpenImages = () => runImages(loader.openImages);
 export const doLoadPath = (p: string) => run(() => loader.loadPath(p), 'open');

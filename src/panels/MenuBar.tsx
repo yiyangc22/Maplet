@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useStore } from '../model/store';
 import { isElectron, recent } from '../platform/loader';
-import { doBrowse, doLoadBundle, doLoadPath, doLoadPerspective, doOpen, doOpenFolder, doOpenImages, doSave } from '../app/load';
+import { doBrowse, doLoadBundle, doLoadPath, doLoadPerspective, doOpen, doOpenFolder, doOpenImages, doSample, doSave } from '../app/load';
 
 export default function MenuBar({
   onToggleHistory,
@@ -63,6 +63,11 @@ export default function MenuBar({
             label="Full visualization (.json)"
             tip="Open a standalone bundle: the whole dataset AND its view, even if the original data file is gone."
             onClick={() => void doLoadBundle()}
+          />
+          <MenuItem
+            label="Sample dataset"
+            tip="Load the bundled MERFISH mouse-hypothalamus demo dataset."
+            onClick={doSample}
           />
           <MenuSep />
           <MenuItem label="Add images…" tip="Load overlay images from a separate spreadsheet (coordinates + file path). Load data first." onClick={doOpenImages} disabled={!dataset} />

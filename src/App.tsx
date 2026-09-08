@@ -21,7 +21,7 @@ import { PointDetails } from './panels/PointDetails';
 import EditHistory from './console/EditHistory';
 import TooltipLayer from './ui/Tooltip';
 import { Section } from './ui/widgets';
-import { doBrowse, doImagesUrl, doUrl, loadDropped, restorableSessionName, restoreLastSession } from './app/load';
+import { doBrowse, doImagesUrl, doSample, doUrl, loadDropped, restorableSessionName, restoreLastSession } from './app/load';
 import { startSessionAutosave } from './app/session';
 
 let autoloaded = false;
@@ -535,6 +535,9 @@ function Welcome({
           )}
           <button className="btn" onClick={() => void doBrowse(false)}>
             Load a dataset…
+          </button>
+          <button className="btn" onClick={() => void doSample()} title="Load the bundled MERFISH mouse-hypothalamus demo dataset">
+            Load sample
           </button>
         </div>
         {restoreName && (
