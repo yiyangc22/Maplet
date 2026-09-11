@@ -39,6 +39,7 @@ export interface ViewportControls {
   resetView(): void;
   fit(scope: 'all' | 'visible'): void;
   snapToPlane(plane: 'xy' | 'yz' | 'xz'): void;
+  roll(): void; // turn the view a quarter turn in the screen plane (3-D only)
   frameSelection(): void;
   getOrtho(): boolean;
   setOrtho(on: boolean): void;

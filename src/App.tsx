@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useStore, type PanelTarget } from './model/store';
-import { columnValueLabel } from './format/maplet';
+import type { AxisRef } from './model/viewstate';
+import { columnValueLabel, targetAxes, variableOptions } from './format/maplet';
 import MapView from './viewer/Viewer3D';
 import { viewports } from './viewer/controls';
 import MenuBar from './panels/MenuBar';
@@ -37,9 +38,9 @@ export default function App() {
   // stale/previous view (or the welcome screen).
   const loading = status === 'loading';
   const showData = !!dataset && !loading;
-  const mainMap = useStore((s) => s.mainMap);
+  const mainTarget = useStore((s) => s.mainTarget);
   const panels = useStore((s) => s.panels);
-  const setMainMap = useStore((s) => s.setMainMap);
+  const setMainTarget = useStore((s) => s.setMainTarget);
   const setPanelView = useStore((s) => s.setPanelView);
   const removePanel = useStore((s) => s.removePanel);
   const addPanel = useStore((s) => s.addPanel);
@@ -53,9 +54,10 @@ export default function App() {
   const rightDown = useRef<{ x: number; y: number } | null>(null);
 
   // A panel can be added when there's a second thing to show (another map, or a
-  // numeric variable to histogram) and fewer than 3 panels are open.
+  // numeric variable to scatter) and fewer than 3 panels are open. The main viewer's
+  // axis chooser is always available so any panel's X/Y/Z can be reassigned.
   const canAddPanel = panels.length < 3 && (maps.length > 1 || hasNumeric);
-  const showMainChooser = maps.length > 1 || hasNumeric;
+  const showMainChooser = maps.length >= 1;
 
   // Right-click over a specific viewport opens the context menu FOR THAT viewport
   // (so its camera / projection are adjusted alone). A right-drag past a few pixels
@@ -72,9 +74,7 @@ export default function App() {
       setCtxMenu({ x: e.clientX, y: e.clientY, viewportId });
     },
   });
-  const onMainChange = (t: PanelTarget) => {
-    if (t.kind === 'map') setMainMap(t.index); // the main viewer only shows coordinate maps
-  };
+  const onMainChange = (t: PanelTarget) => setMainTarget(t);
 
   useEffect(() => {
     if (autoloaded) return;
@@ -238,9 +238,9 @@ export default function App() {
 
         <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="relative min-h-0 flex-1" {...vpHandlers('main')}>
-            {showData && <MapView key={`main-${mainMap}`} target={{ kind: 'map', index: mainMap }} isMain viewportId="main" />}
+            {showData && <MapView key={`main-${targetKey(mainTarget)}`} target={mainTarget} isMain viewportId="main" />}
             {showData && showMainChooser && (
-              <MapChooser target={{ kind: 'map', index: mainMap }} onChange={onMainChange} onAdd={addPanel} canAdd={canAddPanel} />
+              <AxesChooser target={mainTarget} onChange={onMainChange} onAdd={addPanel} canAdd={canAddPanel} />
             )}
             <HoverTooltip />
             {!dataset && !loading && <Welcome error={status === 'error' ? error : null} restoreName={restoreName} onReopen={onReopenLast} />}
@@ -258,11 +258,11 @@ export default function App() {
                   {...vpHandlers(`panel-${slot}`)}
                 >
                   <MapView
-                    key={`panel-${slot}-${t.kind}-${t.kind === 'map' ? t.index : t.key}`}
+                    key={`panel-${slot}-${targetKey(t)}`}
                     target={t}
                     viewportId={`panel-${slot}`}
                   />
-                  <MapChooser target={t} onChange={(nt) => setPanelView(slot, nt)} allowVars onClose={() => removePanel(slot)} />
+                  <AxesChooser target={t} onChange={(nt) => setPanelView(slot, nt)} onClose={() => removePanel(slot)} />
                 </div>
               ))}
             </div>
@@ -385,9 +385,6 @@ function ContextMenu({
     <div onMouseEnter={() => setOpenSub(null)}>{item(label, onClick, opts)}</div>
   );
   const sep = <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />;
-  // Snap: the MAIN viewer goes through the command system (logged + undoable); a
-  // panel snaps its own transient camera directly.
-  const snap = (p: 'xy' | 'xz' | 'yz') => (viewportId === 'main' ? st.snapView(p) : vc?.snapToPlane(p));
 
   return (
     <div ref={ref} className="panel fixed z-[60] py-1" style={{ ...pos, minWidth: W, width: 'max-content', background: 'var(--panel-2)' }}>
@@ -404,9 +401,7 @@ function ContextMenu({
         'view',
         'View',
         <>
-          {is3D && item('Snap to XY plane', () => snap('xy'))}
-          {is3D && item('Snap to XZ plane', () => snap('xz'))}
-          {is3D && item('Snap to YZ plane', () => snap('yz'))}
+          {is3D && item('Rotate view 90°', () => vc?.roll())}
           {item('Fit all points', () => vc?.fit('all'))}
           {item('Fit shown points', () => vc?.fit('visible'))}
           {item('Reset view', () => vc?.resetView())}
@@ -553,84 +548,100 @@ function Welcome({
   );
 }
 
-// The picker overlaying a viewport's top-left: a dropdown to choose what the panel
-// shows — a coordinate map, or (bottom panels only, `allowVars`) a 1-D numeric
-// variable as a histogram. The main viewer also gets a "+" to add a panel; the
-// bottom panels get a "×" to close.
-function MapChooser({
+// A stable string key for a target — used to force a viewport remount when its axes
+// change, so the scene rebuilds around the new coordinate space.
+function targetKey(t: PanelTarget): string {
+  return JSON.stringify(t);
+}
+
+// AxisRef <-> <select> value.
+function refToValue(r: AxisRef): string {
+  return r.src === 'map' ? `m:${r.index}:${r.axis}` : `v:${r.key}`;
+}
+function valueToRef(v: string): AxisRef | null {
+  if (v === 'none') return null;
+  if (v.startsWith('m:')) {
+    const [, i, axis] = v.split(':');
+    return { src: 'map', index: Number(i), axis: axis as 'x' | 'y' | 'z' };
+  }
+  if (v.startsWith('v:')) return { src: 'var', key: v.slice(2) };
+  return null;
+}
+
+// The per-axis panel picker overlaying a viewport's top-left: three dropdowns (X, Y,
+// Z) that each bind a coordinate-map axis OR a numerical variable, so any panel can
+// plot any variable on any axis. Assigning a map's three native axes reproduces that
+// map's plain coordinate view (and, for map 0, its overlays / images). The main
+// viewer also gets a "+" to add a panel; bottom panels get a "×" to close.
+function AxesChooser({
   target,
   onChange,
-  allowVars = false,
   onAdd,
   canAdd = false,
   onClose,
 }: {
   target: PanelTarget;
   onChange: (t: PanelTarget) => void;
-  allowVars?: boolean;
   onAdd?: () => void;
   canAdd?: boolean;
   onClose?: () => void;
 }) {
   const dataset = useStore((s) => s.dataset); // stable ref; derive lists outside the selector
-  const maps = dataset?.maps ?? [];
-  const vars = allowVars ? (dataset?.columns.filter((c) => c.kind === 'continuous') ?? []) : [];
-  if (maps.length === 0) return null;
-  const value = target.kind === 'map' ? `map:${target.index}` : `hist:${target.key}`;
-  const onSelect = (v: string) => {
-    if (v.startsWith('map:')) onChange({ kind: 'map', index: Number(v.slice(4)) });
-    else if (v.startsWith('hist:')) onChange({ kind: 'hist', key: v.slice(5) });
+  if (!dataset || dataset.maps.length === 0) return null;
+  const refs = targetAxes(dataset, target);
+  // The same flat variable list as Color / Size by. Coordinate axes bind as native
+  // map axes (so picking a map's own X/Y/Z reuses that map, overlays and all).
+  const options = variableOptions(dataset).map((o) => ({
+    label: o.label,
+    value: o.axis ? `m:${o.axis.index}:${o.axis.axis}` : `v:${o.key}`,
+  }));
+
+  // Emit an 'axes' target with one axis replaced. X/Y are required, so a null there
+  // (impossible — their dropdowns have no "(none)") is ignored.
+  const setAxis = (which: 'x' | 'y' | 'z', ref: AxisRef | null) => {
+    if (which !== 'z' && !ref) return;
+    const next = { ...refs, [which]: ref };
+    onChange({ kind: 'axes', x: next.x as AxisRef, y: next.y as AxisRef, z: next.z ?? null });
   };
+
+  // One fixed-width dropdown per axis; Z also offers "(none)" for a flat 2-D plot.
+  const axisSelect = (letter: 'x' | 'y' | 'z', ref: AxisRef | null) => (
+    <select
+      className="panel h-[20px] w-[104px] min-w-0 px-1 text-[10px] leading-none"
+      style={{ background: 'var(--panel-2)', color: 'var(--text)', borderColor: 'var(--border)' }}
+      value={ref ? refToValue(ref) : 'none'}
+      onChange={(e) => setAxis(letter, valueToRef(e.target.value))}
+      title={`Variable shown on the ${letter.toUpperCase()} axis`}
+    >
+      {letter === 'z' && <option value="none">(none)</option>}
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+  const times = (
+    <span className="text-[10px]" style={{ color: 'var(--faint)' }}>
+      ×
+    </span>
+  );
+
+  // A single horizontal strip — [x] × [y] × [z] — so it covers as little plot as possible.
   return (
     <div className="absolute left-2 top-1 z-20 flex items-center gap-1">
-      <select
-        className="panel h-[22px] px-1 text-[10px] leading-none"
-        style={{ background: 'var(--panel-2)', color: 'var(--text)', borderColor: 'var(--border)' }}
-        value={value}
-        onChange={(e) => onSelect(e.target.value)}
-        title="What this panel shows"
-      >
-        {vars.length > 0 ? (
-          <>
-            <optgroup label="coordinate maps">
-              {maps.map((m) => (
-                <option key={`map:${m.index}`} value={`map:${m.index}`}>
-                  {m.label}
-                </option>
-              ))}
-            </optgroup>
-            <optgroup label="variables (dot plot)">
-              {vars.map((c) => (
-                <option key={`hist:${c.key}`} value={`hist:${c.key}`}>
-                  {c.label}
-                </option>
-              ))}
-            </optgroup>
-          </>
-        ) : (
-          maps.map((m) => (
-            <option key={`map:${m.index}`} value={`map:${m.index}`}>
-              {m.label}
-            </option>
-          ))
-        )}
-      </select>
+      {axisSelect('x', refs.x)}
+      {times}
+      {axisSelect('y', refs.y)}
+      {times}
+      {axisSelect('z', refs.z)}
       {onAdd && (
-        <button
-          className="btn flex h-[22px] w-[22px] items-center justify-center p-0 text-[15px] leading-none"
-          onClick={onAdd}
-          disabled={!canAdd}
-          title="Add a panel below (up to 3)"
-        >
+        <button className="btn ml-1 flex h-[20px] w-[20px] items-center justify-center p-0 text-[14px] leading-none" onClick={onAdd} disabled={!canAdd} title="Add a panel below (up to 3)">
           +
         </button>
       )}
       {onClose && (
-        <button
-          className="btn flex h-[22px] w-[22px] items-center justify-center p-0 text-[13px] leading-none"
-          onClick={onClose}
-          title="Close this panel"
-        >
+        <button className="btn ml-1 flex h-[20px] w-[20px] items-center justify-center p-0 text-[12px] leading-none" onClick={onClose} title="Close this panel">
           ×
         </button>
       )}

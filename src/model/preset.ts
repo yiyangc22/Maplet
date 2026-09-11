@@ -11,7 +11,7 @@
 // Both are written as `.maplet.json`; `kind` tells them apart on load.
 
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import type { ViewState } from './viewstate';
+import type { PanelTarget, ViewState } from './viewstate';
 
 export interface SavedCamera {
   position: [number, number, number];
@@ -19,12 +19,14 @@ export interface SavedCamera {
   up: [number, number, number];
 }
 
-// Which map / dot plot each viewport was showing, so "the same view" restores the
-// same panels. Structurally a PanelTarget[] (duplicated here to avoid a store↔preset
-// import cycle).
+// Which target each viewport was showing, so "the same view" restores the same
+// panels. `mainTarget` is the current form (a full PanelTarget — a coordinate map or
+// a custom X/Y/Z axis assignment); `mainMap` is the pre-axes form, still read on load
+// for backward compatibility. Written with `mainTarget`.
 export interface SavedLayout {
-  mainMap: number;
-  panels: ({ kind: 'map'; index: number } | { kind: 'hist'; key: string })[];
+  mainTarget?: PanelTarget;
+  mainMap?: number; // legacy (pre per-axis panels)
+  panels: PanelTarget[];
 }
 
 export interface SavedView {

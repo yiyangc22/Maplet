@@ -5,7 +5,7 @@
 // the viewer. `parseCommand` also still parses the same strings from text.
 
 import type { Dataset } from '../format/maplet';
-import { hasCategoryOverflow } from '../format/maplet';
+import { hasCategoryOverflow, numericDomain } from '../format/maplet';
 import { computeColors, computeVisible, defaultFilter, filterIsActive, sameColorIndices, type Filter } from './derive';
 import { fromSerialFilter, toSerialFilter, filtersFromSerial, type LayoutState, type PanelTarget, type ViewState } from './viewstate';
 import type { ExportOptions, ViewerControls } from '../viewer/controls';
@@ -44,6 +44,13 @@ function q(v: string): string {
   return /[\s"]/.test(v) || v === '' ? `"${v.replace(/"/g, '\\"')}"` : v;
 }
 const onOff = (b: boolean) => (b ? 'on' : 'off');
+
+// A panel target as a console token. Per-axis ('axes') targets are created only by
+// the GUI (via the store's commitLayout, not this string grammar), so they only need
+// a readable placeholder here — the text console still speaks map/hist.
+function panelTargetStr(t: PanelTarget): string {
+  return t.kind === 'map' ? `map ${t.index}` : t.kind === 'hist' ? `hist ${t.key}` : 'axes';
+}
 
 // --- canonical command builders (used by the GUI) --------------------------
 
@@ -99,9 +106,9 @@ export const C = {
   viewOrtho: (on: boolean) => `view ortho ${onOff(on)}`,
   exportImg: (o: ExportOptions) => `export ${o.format} ${o.width} ${o.height} ${o.background}`,
   panelMain: (index: number) => `panel main ${index}`,
-  panelAdd: (t: PanelTarget) => `panel add ${t.kind === 'map' ? `map ${t.index}` : `hist ${t.key}`}`,
+  panelAdd: (t: PanelTarget) => `panel add ${panelTargetStr(t)}`,
   panelRemove: (slot: number) => `panel remove ${slot}`,
-  panelView: (slot: number, t: PanelTarget) => `panel view ${slot} ${t.kind === 'map' ? `map ${t.index}` : `hist ${t.key}`}`,
+  panelView: (slot: number, t: PanelTarget) => `panel view ${slot} ${panelTargetStr(t)}`,
 };
 
 // --- tokenizer + resolvers --------------------------------------------------
@@ -199,8 +206,7 @@ export function parseCommand(input: string, ds: Dataset): ParseResult {
       if (key === 'off' || key === 'uniform' || key === 'none') return ok('size off', (vs) => ({ ...vs, sizeKey: null, sizeDomain: null }));
       const col = findColumn(ds, key);
       if (!col) return err(`unknown variable: ${key}`);
-      if (col.kind !== 'continuous') return err(`size by: "${col.key}" is not a numeric variable`);
-      return ok(C.size(col.key), (vs) => ({ ...vs, sizeKey: col.key, sizeDomain: [col.dataMin, col.dataMax] }));
+      return ok(C.size(col.key), (vs) => ({ ...vs, sizeKey: col.key, sizeDomain: numericDomain(col) }));
     }
     case 'sizerange': {
       const lo = parseFloat(a[0]);
@@ -554,7 +560,7 @@ function parseView(a: string[], err: (m: string) => ParseResult): ParseResult {
 function parsePanel(a: string[], ds: Dataset, err: (m: string) => ParseResult): ParseResult {
   const sub = a[0];
   const state = (canonical: string, apply: ParsedCommand['apply']): ParsedCommand => ({ canonical, kind: 'state', apply });
-  const layoutOf = (vs: ViewState): LayoutState => vs.layout ?? { mainMap: ds.primaryMap, panels: [] };
+  const layoutOf = (vs: ViewState): LayoutState => vs.layout ?? { mainTarget: { kind: 'map', index: ds.primaryMap }, panels: [] };
   const target = (kindTok?: string, valTok?: string): PanelTarget | null => {
     if (kindTok === 'map') {
       const i = parseInt(valTok ?? '', 10);
@@ -570,7 +576,7 @@ function parsePanel(a: string[], ds: Dataset, err: (m: string) => ParseResult): 
     case 'main': {
       const i = parseInt(a[1] ?? '', 10);
       if (!ds.maps.some((m) => m.index === i)) return err(`panel main: unknown map ${a[1] ?? ''}`);
-      return state(C.panelMain(i), (vs) => ({ ...vs, layout: { ...layoutOf(vs), mainMap: i } }));
+      return state(C.panelMain(i), (vs) => ({ ...vs, layout: { ...layoutOf(vs), mainTarget: { kind: 'map', index: i } } }));
     }
     case 'add': {
       const t = target(a[1], a[2]);

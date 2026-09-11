@@ -4,6 +4,7 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../model/store';
+import { variableOptions } from '../format/maplet';
 import { Select, Slider } from '../ui/widgets';
 
 export default function SizeControls() {
@@ -11,7 +12,8 @@ export default function SizeControls() {
   const st = useStore();
   const dataset = useStore((x) => x.dataset);
   const sizeDomain = st.sizeDomain;
-  const numericCols = useMemo(() => dataset?.columns.filter((c) => c.kind === 'continuous') ?? [], [dataset]);
+  // Every variable, same list as Color by (categoricals size by their value's rank).
+  const options = useMemo(() => (dataset ? variableOptions(dataset) : []), [dataset]);
 
   return (
     <div className="space-y-3">
@@ -22,10 +24,9 @@ export default function SizeControls() {
           tip="Scale each dot by a numeric variable (independent of Color by). Uniform keeps one size."
         >
           <option value="__uniform__">Uniform</option>
-          {numericCols.map((c) => (
-            <option key={c.key} value={c.key}>
-              {c.label}
-              {'  ⟨grad⟩'}
+          {options.map((o) => (
+            <option key={o.key} value={o.key}>
+              {o.label}
             </option>
           ))}
         </Select>

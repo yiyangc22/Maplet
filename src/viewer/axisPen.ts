@@ -8,6 +8,7 @@ export interface Pen {
   color(c: string): void; // sets both stroke and fill
   font(px: number, bold?: boolean): void;
   line(x1: number, y1: number, x2: number, y2: number): void;
+  circle(x: number, y: number, r: number, fill: boolean): void;
   text(s: string, x: number, y: number, align: TextAlign, baseline: TextBaseline): void;
   textRotated(s: string, x: number, y: number, angleRad: number, align: TextAlign, baseline: TextBaseline): void;
 }
@@ -30,6 +31,12 @@ export class CanvasPen implements Pen {
     this.ctx.moveTo(x1, y1);
     this.ctx.lineTo(x2, y2);
     this.ctx.stroke();
+  }
+  circle(x: number, y: number, r: number, fill: boolean): void {
+    this.ctx.beginPath();
+    this.ctx.arc(x, y, Math.max(0, r), 0, Math.PI * 2);
+    if (fill) this.ctx.fill();
+    else this.ctx.stroke();
   }
   text(s: string, x: number, y: number, align: TextAlign, baseline: TextBaseline): void {
     this.ctx.textAlign = align;
@@ -61,6 +68,11 @@ export class SvgPen implements Pen {
   }
   line(x1: number, y1: number, x2: number, y2: number): void {
     this.parts.push(`<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" stroke="${this.col}" stroke-width="1"/>`);
+  }
+  circle(x: number, y: number, r: number, fill: boolean): void {
+    this.parts.push(
+      `<circle cx="${n(x)}" cy="${n(y)}" r="${n(Math.max(0, r))}" fill="${fill ? this.col : 'none'}" stroke="${fill ? 'none' : this.col}" stroke-width="1"/>`,
+    );
   }
   text(s: string, x: number, y: number, align: TextAlign, baseline: TextBaseline): void {
     const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';

@@ -179,6 +179,118 @@ export function mapByIndex(ds: Dataset, index: number): CoordMap | undefined {
   return ds.maps.find((m) => m.index === index);
 }
 
+// ---------------------------------------------------------------------------
+// Virtual numeric columns (id + coordinate axes)
+// ---------------------------------------------------------------------------
+// The id and the coordinate-map columns are consumed by the loader (they aren't in
+// `columns`), but every variable dropdown (color / size / panel axes) should still
+// offer them. They're exposed as read-only numeric columns living ONLY in
+// `columnByKey` — so they never get a filter block or duplicate into a saved bundle.
+export const ID_KEY = '@id';
+export function mapAxisKey(index: number, axis: 'x' | 'y' | 'z'): string {
+  return `@m${index}:${axis}`;
+}
+
+function numericColumn(key: string, label: string, data: Float32Array): ContinuousColumn {
+  let lo = Infinity;
+  let hi = -Infinity;
+  let nMissing = 0;
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i];
+    if (Number.isFinite(v)) {
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    } else nMissing++;
+  }
+  if (!Number.isFinite(lo)) [lo, hi] = [0, 1];
+  return {
+    kind: 'continuous',
+    key,
+    label,
+    nMissing,
+    suggestedType: 'grad',
+    typeDeclared: false,
+    data,
+    domain: [lo, hi],
+    dataMin: lo,
+    dataMax: hi,
+    scale: 'linear',
+    colormap: 'viridis',
+  };
+}
+
+// The id as a number — the whole id when it's numeric, else its trailing number
+// ("cell_00042" → 42); ids with no number are missing, and if NONE parse the row
+// index stands in. Then each map's native axes.
+function idNumber(s: string | null | undefined): number {
+  if (s == null || s.trim() === '') return NaN;
+  const v = Number(s);
+  if (Number.isFinite(v)) return v;
+  const m = /(\d+(?:\.\d+)?)\D*$/.exec(s);
+  return m ? Number(m[1]) : NaN;
+}
+function virtualColumns(maps: CoordMap[], pointIds: string[]): ContinuousColumn[] {
+  const n = pointIds.length;
+  const ids = new Float32Array(n);
+  let parsed = 0;
+  for (let i = 0; i < n; i++) {
+    const v = idNumber(pointIds[i]);
+    ids[i] = v;
+    if (Number.isFinite(v)) parsed++;
+  }
+  if (parsed === 0) for (let i = 0; i < n; i++) ids[i] = i;
+  const out = [numericColumn(ID_KEY, 'id', ids)];
+  for (const m of maps) {
+    (['x', 'y', 'z'] as const).slice(0, m.dims).forEach((axis, off) => {
+      const data = new Float32Array(n);
+      for (let i = 0; i < n; i++) data[i] = m.positions[i * 3 + off];
+      out.push(numericColumn(mapAxisKey(m.index, axis), m.axes[off] ?? axis, data));
+    });
+  }
+  return out;
+}
+
+// columnByKey for a dataset: the real columns plus the virtual id / axis columns.
+export function indexColumns(columns: Column[], maps: CoordMap[], pointIds: string[]): Map<string, Column> {
+  const byKey = new Map<string, Column>();
+  for (const c of virtualColumns(maps, pointIds)) byKey.set(c.key, c);
+  for (const c of columns) byKey.set(c.key, c);
+  return byKey;
+}
+
+// Every variable a dropdown can pick, in one flat list: the id, each map's
+// coordinate axes, then the file's variables in file order. `axis` is set on the
+// coordinate entries (the panel axis pickers bind those as native map axes).
+export interface VariableOption {
+  key: string;
+  label: string;
+  axis?: { index: number; axis: 'x' | 'y' | 'z' };
+}
+export function variableOptions(ds: Dataset): VariableOption[] {
+  const out: VariableOption[] = [{ key: ID_KEY, label: 'id' }];
+  for (const m of ds.maps) {
+    (['x', 'y', 'z'] as const).slice(0, m.dims).forEach((axis, off) => {
+      out.push({ key: mapAxisKey(m.index, axis), label: m.axes[off] ?? axis, axis: { index: m.index, axis } });
+    });
+  }
+  for (const c of ds.columns) out.push({ key: c.key, label: c.label });
+  return out;
+}
+
+// A column read as numbers (continuous value; categorical palette index; ranked top
+// confidence) plus its natural range — used by "size by" and the panel axes so every
+// variable type can drive them.
+export function numericValue(col: Column, i: number): number {
+  if (col.kind === 'continuous') return col.data[i];
+  if (col.kind === 'categorical') return col.data[i] >= 0 ? col.data[i] : NaN;
+  return col.conf[i];
+}
+export function numericDomain(col: Column): [number, number] {
+  if (col.kind === 'continuous') return [col.dataMin, col.dataMax];
+  if (col.kind === 'categorical') return [0, Math.max(1, col.categories.length - 1)];
+  return [0, 1];
+}
+
 // Build an on-the-fly "dot plot" map for a 1-D numeric variable: every point is a
 // dot at (row index in the file, its value). Rendered by the same viewer as a real
 // coordinate map, so it shares the store's colour / selection / hover / lasso — the
@@ -240,6 +352,119 @@ export function buildVariableDotMap(ds: Dataset, key: string): CoordMap {
       { label, unit: col?.unit, scale: 1 / yScale, offset: vmin }, // world-y → value
     ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-panel axis assignment (custom scatter)
+// ---------------------------------------------------------------------------
+// A panel can bind ANY numerical variable or coordinate-map axis to each of X / Y /
+// Z (see AxisRef / PanelTarget in model/viewstate). These builders turn a target
+// into the CoordMap the viewer renders — reusing a real coordinate map when the
+// chosen axes ARE that map's native axes (so map 0's overlays / images / animation
+// still work when you're just looking at the native spatial view), and otherwise
+// building a synthetic scatter buffer on the fly. Type-only import to avoid a
+// runtime cycle (viewstate imports Dataset from here).
+import type { AxisRef, PanelTarget } from '../model/viewstate';
+
+// Reader for one axis source, over the CURRENT (frame-0) data.
+function axisAccessor(ds: Dataset, ref: AxisRef): { get: (i: number) => number; label: string } {
+  if (ref.src === 'var') {
+    // Any variable type: a categorical separates groups by palette index (missing → NaN).
+    const col = ds.columnByKey.get(ref.key);
+    if (col) return { get: (i) => numericValue(col, i), label: col.label };
+    return { get: () => NaN, label: ref.key };
+  }
+  const m = mapByIndex(ds, ref.index);
+  const off = ref.axis === 'x' ? 0 : ref.axis === 'y' ? 1 : 2;
+  if (!m) return { get: () => NaN, label: ref.axis };
+  const pos = m.positions;
+  return { get: (i) => pos[i * 3 + off], label: m.axes[off] ?? ref.axis };
+}
+
+// Build a synthetic scatter map from three axis refs (Z optional → 2-D). A point is
+// placed only where BOTH X and Y are finite (matching the coordinate-map rule); a
+// non-finite Z floors to 0. index = VARIABLE_MAP_INDEX so it never picks up map-0's
+// spatial overlays.
+export function buildAxisMap(ds: Dataset, x: AxisRef, y: AxisRef, z: AxisRef | null): CoordMap {
+  const n = ds.n;
+  const ax = axisAccessor(ds, x);
+  const ay = axisAccessor(ds, y);
+  const az = z ? axisAccessor(ds, z) : null;
+  const dims: 2 | 3 = az ? 3 : 2;
+  const positions = new Float32Array(n * 3).fill(NaN);
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    const xv = ax.get(i);
+    const yv = ay.get(i);
+    if (Number.isFinite(xv) && Number.isFinite(yv)) {
+      positions[i * 3] = xv;
+      positions[i * 3 + 1] = yv;
+      const zv = az ? az.get(i) : 0;
+      positions[i * 3 + 2] = Number.isFinite(zv) ? zv : 0;
+      count++;
+    }
+  }
+  const axes = az ? [ax.label, ay.label, az.label] : [ax.label, ay.label];
+  return {
+    index: VARIABLE_MAP_INDEX,
+    axes,
+    dims,
+    label: axes.join(' × '),
+    positions,
+    bounds: computeBounds(positions, n),
+    count,
+  };
+}
+
+// The native-axes 'axes' target for a real coordinate map (X→x, Y→y, and Z→z for a
+// 3-D map). Used for defaults and when a panel is set to a whole map.
+export function nativeTarget(m: CoordMap): PanelTarget {
+  return {
+    kind: 'axes',
+    x: { src: 'map', index: m.index, axis: 'x' },
+    y: { src: 'map', index: m.index, axis: 'y' },
+    z: m.dims === 3 ? { src: 'map', index: m.index, axis: 'z' } : null,
+  };
+}
+
+// If an 'axes' target is exactly one real map's native axes, return that map (so we
+// reuse it, overlays and all) — else null.
+function nativeMapOf(ds: Dataset, t: Extract<PanelTarget, { kind: 'axes' }>): CoordMap | null {
+  if (t.x.src !== 'map' || t.y.src !== 'map' || t.x.axis !== 'x' || t.y.axis !== 'y') return null;
+  const idx = t.x.index;
+  if (t.y.index !== idx) return null;
+  const m = mapByIndex(ds, idx);
+  if (!m) return null;
+  if (m.dims === 3) {
+    if (!t.z || t.z.src !== 'map' || t.z.index !== idx || t.z.axis !== 'z') return null;
+  } else if (t.z) {
+    return null;
+  }
+  return m;
+}
+
+// Resolve a PanelTarget to the CoordMap the viewer renders.
+export function resolveTargetMap(ds: Dataset, target: PanelTarget): CoordMap | null {
+  if (target.kind === 'map') return mapByIndex(ds, target.index) ?? ds.maps[0] ?? null;
+  if (target.kind === 'hist') return buildVariableDotMap(ds, target.key);
+  return nativeMapOf(ds, target) ?? buildAxisMap(ds, target.x, target.y, target.z);
+}
+
+// The X / Y / Z axis refs a target displays — used by the panel's axis dropdowns to
+// show the current assignment. A legacy 'map' target reads back as that map's native
+// axes; a legacy 'hist' (dot plot) as the primary map's X against the variable on Y.
+export function targetAxes(ds: Dataset, target: PanelTarget): { x: AxisRef; y: AxisRef; z: AxisRef | null } {
+  if (target.kind === 'axes') return { x: target.x, y: target.y, z: target.z };
+  if (target.kind === 'map') {
+    const m = mapByIndex(ds, target.index) ?? ds.maps[0];
+    return {
+      x: { src: 'map', index: m.index, axis: 'x' },
+      y: { src: 'map', index: m.index, axis: 'y' },
+      z: m.dims === 3 ? { src: 'map', index: m.index, axis: 'z' } : null,
+    };
+  }
+  const m = ds.maps[0];
+  return { x: { src: 'map', index: m.index, axis: 'x' }, y: { src: 'var', key: target.key }, z: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -375,8 +600,7 @@ export function buildDataset(
     }
   }
 
-  const columnByKey = new Map<string, Column>();
-  for (const col of columns) columnByKey.set(col.key, col);
+  const columnByKey = indexColumns(columns, maps, points.map((p) => p.id));
 
   const images = Array.isArray(manifest.images)
     ? manifest.images.filter((im) => im && Array.isArray(im.extent) && im.extent.length === 4 && Array.isArray(im.channels))
@@ -867,8 +1091,7 @@ export function datasetToPayload(ds: Dataset): DatasetPayload {
 // Rebuild a Dataset from a worker payload (runs on the main thread): reconstruct
 // columnByKey + positions/bounds aliases, and install the lazy `points` view.
 export function payloadToDataset(p: DatasetPayload): Dataset {
-  const columnByKey = new Map<string, Column>();
-  for (const c of p.columns) columnByKey.set(c.key, c);
+  const columnByKey = indexColumns(p.columns, p.maps, p.pointIds);
   const primary = p.maps.find((m) => m.index === p.primaryMap) ?? p.maps[0];
   return {
     source: p.source,

@@ -3,6 +3,7 @@
 // test. All functions are O(n) over points.
 
 import type { Column, Dataset } from '../format/maplet';
+import { numericDomain, numericValue } from '../format/maplet';
 import { categoricalColor, MISSING_COLOR, sampleColormap } from '../format/colormaps';
 
 export type RankedColorMode = 'label' | 'confidence';
@@ -49,12 +50,15 @@ export const SIZE_MIN = 0.45;
 export const SIZE_MAX = 3.2;
 export function computeSizes(ds: Dataset, key: string | null, sizeDomain?: [number, number] | null): Float32Array | null {
   const col = key ? ds.columnByKey.get(key) : undefined;
-  if (!col || col.kind !== 'continuous') return null;
-  // Values below/above the domain floor/ceil to the min/max dot size (clamp of t).
-  const domain: [number, number] = sizeDomain ?? [col.dataMin, col.dataMax];
+  if (!col) return null;
+  // Any variable type sizes by its numeric reading (categorical → palette index,
+  // ranked → confidence). Values below/above the domain floor/ceil to the min/max
+  // dot size (clamp of t).
+  const domain: [number, number] = sizeDomain ?? numericDomain(col);
+  const scale = col.kind === 'continuous' ? col.scale : 'linear';
   const out = new Float32Array(ds.n);
   for (let i = 0; i < ds.n; i++) {
-    const t = normalizeContinuous(col.data[i], domain, col.scale);
+    const t = normalizeContinuous(numericValue(col, i), domain, scale);
     out[i] = Number.isNaN(t) ? 1 : SIZE_MIN + Math.max(0, Math.min(1, t)) * (SIZE_MAX - SIZE_MIN);
   }
   return out;

@@ -23,12 +23,27 @@ export interface ViewerSettings {
   showBlips: boolean; // multi-frame: flash a point once (radar ping) when its position updates
 }
 
-// What a viewport shows. The main viewer is always a coordinate map; a bottom
-// panel can also show a 1-D numeric variable as a dot plot. Kept here (not in the
-// store) so the panel layout can live inside a ViewState and be undoable.
-export type PanelTarget = { kind: 'map'; index: number } | { kind: 'hist'; key: string };
+// One axis of a panel is driven by EITHER a coordinate map's native axis (its
+// x/y/z position buffer) OR a numerical variable's values. Three of these (Z
+// optional) define a custom scatter — see the 'axes' PanelTarget.
+export type AxisRef =
+  | { src: 'map'; index: number; axis: 'x' | 'y' | 'z' }
+  | { src: 'var'; key: string };
+
+// What a viewport shows. 'axes' is the general case introduced in this version: any
+// variable / map-axis assigned to each of X / Y / Z, per panel. 'map' and 'hist' are
+// retained so older saved views keep loading (and are normalised into an equivalent
+// 'axes' target by the UI):
+//   • map  — a whole coordinate map (its native x/y/z axes)
+//   • hist — a 1-D numeric variable as a row-vs-value dot plot
+// Kept here (not in the store) so the panel layout lives inside a ViewState and is
+// undoable.
+export type PanelTarget =
+  | { kind: 'map'; index: number }
+  | { kind: 'hist'; key: string }
+  | { kind: 'axes'; x: AxisRef; y: AxisRef; z: AxisRef | null };
 export interface LayoutState {
-  mainMap: number;
+  mainTarget: PanelTarget;
   panels: PanelTarget[];
 }
 

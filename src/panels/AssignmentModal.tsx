@@ -88,7 +88,14 @@ export default function AssignmentModal() {
   if (!prompt) return null;
 
   const setRole = (i: number, v: string) => setRoles((rs) => rs.map((r, j) => (j === i ? valueToRole(v) : r)));
-  const mapCount = Math.max(1, assignment ? assignment.maps.length : 1);
+  // How many maps to offer in every row's dropdown. Derived from the RAW roles (the
+  // highest map index any column is currently assigned to) — NOT from the validated
+  // `assignment`, which is null whenever a map is half-assigned (e.g. its X is set
+  // but its Y isn't). Using the assignment made map 2/3's options disappear mid-edit,
+  // which also snapped that <select> back to its first option ("numerical"). We show
+  // every map in use plus one empty map to grow into, capped at MAX_MAPS.
+  const maxMapUsed = roles.reduce((m, r) => (r.kind === 'coord' ? Math.max(m, r.map) : m), -1);
+  const mapsToShow = Math.min(MAX_MAPS, Math.max(maxMapUsed + 2, 2));
 
   return (
     <Modal
@@ -134,7 +141,7 @@ export default function AssignmentModal() {
                   {c.samples.join(', ') || '—'}
                 </td>
                 <td className="px-2 py-1">
-                  <RoleSelect value={roleToValue(roles[i] ?? c.role)} mapCount={mapCount} onChange={(v) => setRole(i, v)} />
+                  <RoleSelect value={roleToValue(roles[i] ?? c.role)} mapsToShow={mapsToShow} onChange={(v) => setRole(i, v)} />
                 </td>
               </tr>
             ))}
@@ -155,10 +162,9 @@ export default function AssignmentModal() {
 
 // The per-column role picker. Coordinate axes are grouped per map; maps beyond the
 // ones currently in use (plus one spare, up to MAX_MAPS) are offered so the user can
-// add a new map without a separate control.
-function RoleSelect({ value, mapCount, onChange }: { value: string; mapCount: number; onChange: (v: string) => void }) {
-  // Show every map already in use, plus one empty map to grow into (capped).
-  const mapsToShow = Math.min(MAX_MAPS, Math.max(mapCount + 1, 2));
+// add a new map without a separate control. `mapsToShow` is computed by the parent
+// from the raw roles so a half-assigned map never drops out of the list.
+function RoleSelect({ value, mapsToShow, onChange }: { value: string; mapsToShow: number; onChange: (v: string) => void }) {
   return (
     <select
       value={value}

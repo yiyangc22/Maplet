@@ -138,9 +138,26 @@ function ContinuousFilter({
         low={f.min}
         high={f.max}
         scale={col.scale}
-        format={formatNumber}
         onChange={(lo, hi) => setContinuousRange(col.key, lo, hi)}
       />
+      {/* Type exact bounds — a companion to the sliders for precise cut-offs. Each box
+          commits on Enter or blur; values are clamped to the data range and kept
+          ordered (min ≤ max). */}
+      <div className="mt-1 flex items-center gap-2">
+        <NumBox
+          value={f.min}
+          tip="Lowest value shown. Enter to apply."
+          onCommit={(v) => setContinuousRange(col.key, Math.min(Math.max(v, col.dataMin), f.max), f.max)}
+        />
+        <span className="text-[10px]" style={{ color: 'var(--faint)' }}>
+          to
+        </span>
+        <NumBox
+          value={f.max}
+          tip="Highest value shown. Enter to apply."
+          onCommit={(v) => setContinuousRange(col.key, f.min, Math.max(Math.min(v, col.dataMax), f.min))}
+        />
+      </div>
       {col.nMissing > 0 && (
         <Toggle
           label={<span style={{ color: 'var(--muted)' }}>include missing ({col.nMissing.toLocaleString()})</span>}
@@ -172,6 +189,45 @@ function RankedFilter({
       </div>
       <Slider min={0} max={1} step={0.01} value={f.minConf} onChange={(v) => setRankedMinConf(col.key, v)} />
     </div>
+  );
+}
+
+// A compact numeric text box for typing an exact filter bound. It holds its own
+// draft text while focused (so mid-edit keystrokes aren't clobbered by the store
+// echoing back a rounded value), and commits a parsed number on Enter or blur;
+// Escape / an unparseable value reverts to the current bound.
+function NumBox({ value, onCommit, tip }: { value: number; onCommit: (v: number) => void; tip?: string }) {
+  // While focused, `draft` holds the raw text so store echoes (rounded values) don't
+  // clobber mid-edit keystrokes; when not editing it's null and the live value shows.
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? formatNumber(value);
+  const commit = (text: string) => {
+    const v = Number(text);
+    if (text.trim() !== '' && Number.isFinite(v)) onCommit(v);
+    setDraft(null);
+  };
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={shown}
+      data-tip={tip}
+      onFocus={(e) => {
+        setDraft(String(value));
+        e.currentTarget.select();
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => commit(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        else if (e.key === 'Escape') {
+          setDraft(null);
+          e.currentTarget.blur();
+        }
+      }}
+      className="mono-num w-0 min-w-0 flex-1 border bg-transparent px-1 py-[2px] text-[11px] outline-none"
+      style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
+    />
   );
 }
 

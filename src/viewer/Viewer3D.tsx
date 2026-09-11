@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { useStore, type PanelTarget } from '../model/store';
-import { buildVariableDotMap, type AxisFrame, type CoordMap, type Dataset } from '../format/maplet';
+import { resolveTargetMap, type AxisFrame, type CoordMap, type Dataset } from '../format/maplet';
 import { viewerControls, viewports, type ExportBackground, type ExportOptions } from './controls';
 import { CanvasPen, SvgPen, type Pen } from './axisPen';
 import type { SavedCamera } from '../model/preset';
@@ -33,14 +33,13 @@ export default function MapView({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dataset = useStore((s) => s.dataset);
-  // Resolve the panel's target to a coordinate map: a real one, or a synthetic
-  // dot-plot map derived from a numeric variable. Memoised so the scene rebuilds
-  // only when the target (not every render) changes.
-  const tkey = target.kind === 'map' ? `map:${target.index}` : `hist:${target.key}`;
+  // Resolve the panel's target to a coordinate map: a real one, or a synthetic map
+  // built from the per-axis assignment (any variable / map-axis on X/Y/Z). Memoised
+  // so the scene rebuilds only when the target (not every render) changes.
+  const tkey = JSON.stringify(target);
   const map = useMemo<CoordMap | null>(() => {
     if (!dataset) return null;
-    if (target.kind === 'map') return dataset.maps.find((m) => m.index === target.index) ?? dataset.maps[0];
-    return buildVariableDotMap(dataset, target.key);
+    return resolveTargetMap(dataset, target) ?? dataset.maps[0] ?? null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataset, tkey]);
 
@@ -110,9 +109,13 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   // both drags pan and rotation is disabled.
   controls.mouseButtons = {
     LEFT: THREE.MOUSE.PAN,
-    MIDDLE: THREE.MOUSE.DOLLY,
+    MIDDLE: THREE.MOUSE.PAN,
     RIGHT: dims === 2 ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
   };
+  // Zoom is ours (see zoomAt below), not OrbitControls' — its dolly walks the camera
+  // toward a FIXED target, which runs out of room; ours scales the whole view about
+  // the cursor, so it never bottoms out or tops out.
+  controls.enableZoom = false;
   if (dims === 2) controls.enableRotate = false;
   // Let the app know when the perspective changed so the session can be saved
   // (only the main viewer drives the session autosave).
@@ -120,6 +123,52 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     if (isMain) viewerControls.onCameraMoved?.();
   };
   controls.addEventListener('end', emitCameraMoved);
+
+  // --- zoom ----------------------------------------------------------------
+  // Zooming scales the camera AND the orbit target about the point under the cursor
+  // (on the plane through the target), so one wheel notch always changes the view by
+  // the same FACTOR. Distance shrinks/grows geometrically and is never clamped, so
+  // zoom is unlimited in both directions and feels identical at every scale — the
+  // clip planes follow the distance (updateClipPlanes), so nothing gets cut away.
+  const ZOOM_STEP = 1.15; // per wheel notch
+  const tmpDir = new THREE.Vector3();
+  const tmpView = new THREE.Vector3();
+  const tmpAnchor = new THREE.Vector3();
+  const tmpOff = new THREE.Vector3();
+  function zoomAt(clientX: number, clientY: number, factor: number): void {
+    const rect = renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height || !(factor > 0) || !Number.isFinite(factor)) return;
+    const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = -((clientY - rect.top) / rect.height) * 2 + 1;
+    camera.updateMatrixWorld(); // unproject reads matrixWorld — it's stale between frames
+    // The world point under the cursor, on the plane through the target facing the
+    // camera. Scaling about it keeps whatever is under the cursor exactly in place.
+    tmpView.subVectors(controls.target, camera.position);
+    const dist = tmpView.length();
+    if (!(dist > 0)) return;
+    tmpDir.set(nx, ny, 0.5).unproject(camera).sub(camera.position).normalize();
+    const cos = tmpDir.dot(tmpView.normalize());
+    tmpAnchor.copy(cos > 1e-3 ? camera.position.clone().addScaledVector(tmpDir, dist / cos) : controls.target);
+    // Each offset must be measured BEFORE its vector is overwritten (`copy()` runs
+    // before the argument is evaluated), so scale first, then place.
+    tmpOff.subVectors(camera.position, tmpAnchor).multiplyScalar(factor);
+    camera.position.copy(tmpAnchor).add(tmpOff);
+    tmpOff.subVectors(controls.target, tmpAnchor).multiplyScalar(factor);
+    controls.target.copy(tmpAnchor).add(tmpOff);
+    updateClipPlanes(true);
+    controls.update();
+    emitCameraMoved();
+  }
+  function onWheel(e: WheelEvent): void {
+    e.preventDefault();
+    cancelTween(); // the user took over
+    // deltaMode 1 = lines, 2 = pages. Cap one event at a few notches so a coarse
+    // wheel (or a trackpad fling) can't jump the view.
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
+    const notches = Math.min(4, (Math.abs(e.deltaY) * unit) / 100 || 1);
+    zoomAt(e.clientX, e.clientY, Math.pow(ZOOM_STEP, Math.sign(e.deltaY) * notches));
+  }
+  renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
 
   // Orthographic (parallel-projection) camera for accurate flattened export. It
   // MIRRORS the perspective camera's pose every frame; OrbitControls always drives
@@ -136,7 +185,7 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     orthoCam.position.copy(camera.position);
     orthoCam.quaternion.copy(camera.quaternion);
     orthoCam.up.copy(camera.up);
-    const vHalf = Math.max(1e-4, Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * centerDist());
+    const vHalf = Math.max(1e-12, Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * centerDist());
     orthoCam.top = vHalf;
     orthoCam.bottom = -vHalf;
     orthoCam.left = -vHalf * camera.aspect;
@@ -527,6 +576,33 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   const unsubs: (() => void)[] = [];
   let lastHover = -1;
 
+  // Seed visibility / selection / hover from the CURRENT store state. The
+  // subscriptions below only fire on CHANGE, and attachPointAttributes seeds only
+  // colours + sizes — so a panel (re)mounted while a filter or selection is already
+  // active (e.g. right after you switch its axes) must copy that state in now, or it
+  // would render every point visible and none selected until the next change. This
+  // is what made filtering / colouring look out of sync across panels.
+  {
+    const st0 = store.getState();
+    if (st0.visible) {
+      const a = aVisible.array as Float32Array;
+      for (let i = 0; i < n; i++) a[i] = st0.visible[i];
+      aVisible.needsUpdate = true;
+    }
+    if (st0.selectedMask) {
+      const a = aSelected.array as Float32Array;
+      const m = st0.selectedMask;
+      for (let i = 0; i < n; i++) a[i] = m[i];
+      aSelected.needsUpdate = true;
+    }
+    if (st0.hover != null && st0.hover >= 0 && st0.hover < n) {
+      (aHover.array as Float32Array)[st0.hover] = 1;
+      aHover.needsUpdate = true;
+      lastHover = st0.hover;
+    }
+    updateTraceColors();
+  }
+
   // True once a DIFFERENT dataset is installed in the store: zustand fires subscribers
   // synchronously inside the load's set(), before React tears this stale viewer down and
   // remounts — so a stale viewer must ignore updates sized for the new dataset (e.g.
@@ -730,6 +806,7 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   }
 
   function onPointerDown(e: PointerEvent) {
+    cancelTween(); // a drag takes over from a running snap
     downX = e.clientX;
     downY = e.clientY;
     downTime = performance.now();
@@ -874,6 +951,87 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     const radius = Math.max(bounds.radius * 0.02, box.getSize(new THREE.Vector3()).length() * 0.5);
     fitTo(center, radius, true);
   }
+  // OrbitControls snapshots `camera.up` into a quaternion ONCE, when it's constructed
+  // — so after we change `up` (snapping to an axis, or rolling) its orbit frame is
+  // stale and dragging would rotate about the old vertical. Refresh that pair.
+  function refreshControlsUp(): void {
+    const c = controls as unknown as { _quat?: THREE.Quaternion; _quatInverse?: THREE.Quaternion };
+    c._quat?.setFromUnitVectors(camera.up, new THREE.Vector3(0, 1, 0));
+    if (c._quat && c._quatInverse) c._quatInverse.copy(c._quat).invert();
+  }
+  // --- animated camera moves ------------------------------------------------
+  // A snap ROTATES into its new orientation over a short arc rather than cutting, so
+  // it stays obvious how the new view relates to the old one. The tween is stepped
+  // from `tick`; any wheel / drag cancels it.
+  const SNAP_MS = 380;
+  const poseDummy = new THREE.Object3D();
+  let camTween: {
+    q0: THREE.Quaternion;
+    q1: THREE.Quaternion;
+    d0: number;
+    d1: number;
+    target: THREE.Vector3;
+    t0: number;
+  } | null = null;
+  const cancelTween = (): void => {
+    camTween = null;
+  };
+  // The camera orientation that looks at `target` from `pos` with `up`.
+  function poseQuat(pos: THREE.Vector3, target: THREE.Vector3, up: THREE.Vector3): THREE.Quaternion {
+    poseDummy.up.copy(up);
+    poseDummy.position.copy(pos);
+    poseDummy.lookAt(target);
+    return poseDummy.quaternion.clone();
+  }
+  // Place the camera at `dist` from `target` in the orientation `q` (up included, so
+  // an interpolated roll shows).
+  function applyPose(q: THREE.Quaternion, dist: number, target: THREE.Vector3): void {
+    camera.up.set(0, 1, 0).applyQuaternion(q);
+    camera.position.copy(target).addScaledVector(new THREE.Vector3(0, 0, -1).applyQuaternion(q), -dist);
+    refreshControlsUp();
+    camera.updateProjectionMatrix();
+    controls.update();
+  }
+  function animateTo(toPos: THREE.Vector3, toUp: THREE.Vector3): void {
+    const target = controls.target.clone();
+    const q0 = poseQuat(camera.position, target, camera.up);
+    const q1 = poseQuat(toPos, target, toUp);
+    const d0 = camera.position.distanceTo(target);
+    const d1 = toPos.distanceTo(target);
+    if (!(d0 > 0) || !(d1 > 0)) return;
+    if (q0.angleTo(q1) < 1e-4 && Math.abs(d1 - d0) < d0 * 1e-4) return; // already there
+    camTween = { q0, q1, d0, d1, target, t0: performance.now() };
+  }
+  function stepTween(): void {
+    if (!camTween) return;
+    const s = Math.min(1, (performance.now() - camTween.t0) / SNAP_MS);
+    const e = s < 0.5 ? 2 * s * s : 1 - Math.pow(-2 * s + 2, 2) / 2; // ease in / out
+    applyPose(camTween.q0.clone().slerp(camTween.q1, e), camTween.d0 + (camTween.d1 - camTween.d0) * e, camTween.target);
+    updateClipPlanes(true);
+    if (s >= 1) {
+      camTween = null;
+      emitCameraMoved();
+    }
+  }
+
+  // Look straight down one axis (the gizmo's balls), keeping the current target and
+  // distance — an orientation change only, so you stay where you were looking.
+  // Clicking the axis you're ALREADY looking down flips to the opposite side, so the
+  // same ball toggles +x / −x (as in Blender).
+  function doSnapAxis(axis: 0 | 1 | 2, sign: 1 | -1): void {
+    const d = centerDist() || fitDistance(bounds.radius);
+    const axisVec = (s: number) => new THREE.Vector3(axis === 0 ? s : 0, axis === 1 ? s : 0, axis === 2 ? s : 0);
+    const current = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+    const s: 1 | -1 = current.dot(axisVec(sign)) > 0.999 ? ((-sign) as 1 | -1) : sign;
+    animateTo(controls.target.clone().addScaledVector(axisVec(s), d), new THREE.Vector3(0, axis === 2 ? 1 : 0, axis === 2 ? 0 : 1));
+  }
+  // Roll the view a quarter turn in the screen plane (the picture spins; the side
+  // you're looking from doesn't change).
+  function doRoll(): void {
+    const dir = new THREE.Vector3().subVectors(controls.target, camera.position);
+    if (dir.lengthSq() < 1e-12) return;
+    animateTo(camera.position.clone(), camera.up.clone().applyAxisAngle(dir.normalize(), Math.PI / 2).normalize());
+  }
   function doSnap(plane: 'xy' | 'yz' | 'xz'): void {
     // A 2D map has no depth to snap through — just re-frame it flat.
     if (dims === 2) {
@@ -894,6 +1052,7 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
       camera.position.set(center.x + d, center.y, center.z);
     }
     camera.updateProjectionMatrix();
+    refreshControlsUp();
     controls.update();
     emitCameraMoved();
   }
@@ -905,6 +1064,7 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     resetView: doReset,
     fit: doFit,
     snapToPlane: doSnap,
+    roll: doRoll,
     frameSelection: doFrameSelection,
     getOrtho: isMain ? () => store.getState().settings.orthographic : () => ortho,
     setOrtho: isMain ? (on) => store.getState().setOrthographic(on) : (on) => setProjection(on),
@@ -1108,18 +1268,18 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     }
     const pts: { x: number; y: number; r: number; dist: number; col: string }[] = [];
     const tmp = new THREE.Vector3();
-    const cd = centerDist(); // ortho: constant point size across depth
     for (let i = 0; i < n; i++) {
       if (vis && !vis[i]) continue;
       tmp.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-      const dist = ortho ? cd : cam.position.distanceTo(tmp);
       const p = projectVec(tmp, cam, width, height);
       if (!p) continue;
-      const rad = Math.min(64, Math.max(0.4, 1.5 * set.pointSize * (focal / dist) * sizeScale * (sizes ? sizes[i] : 1)));
+      // View-independent dot size: a fixed screen size (scaled only to the export
+      // resolution), matching the live shader — no camera-distance falloff.
+      const rad = Math.min(64, Math.max(0.4, 1.5 * set.pointSize * sizeScale * (sizes ? sizes[i] : 1)));
       const cr = colors ? Math.round(colors[i * 3] * 255) : 150;
       const cg = colors ? Math.round(colors[i * 3 + 1] * 255) : 150;
       const cb = colors ? Math.round(colors[i * 3 + 2] * 255) : 150;
-      // Sort by true depth (painter's order) even though ortho sizes by `cd`.
+      // Keep true depth for painter's-order sorting (dot size itself is depth-independent).
       pts.push({ x: p.x, y: p.y, r: rad, dist: cam.position.distanceTo(tmp), col: `rgb(${cr},${cg},${cb})` });
     }
     pts.sort((u, v) => v.dist - u.dist);
@@ -1377,6 +1537,71 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     for (const p of pts) pen.text(p.text, p.x, p.y, 'center', 'bottom');
   }
 
+  // --- orientation gizmo (3-D viewports only) -------------------------------
+  // A Blender-style axis cross in the top-right corner: six balls — +x/+y/+z solid
+  // and lettered, −x/−y/−z hollow — each snapping the camera to look down that axis
+  // (clicking the axis you're on flips to its other side). It's painted on the axis
+  // overlay (live canvas only, never in exports) and hit-tested from a capture-phase
+  // listener on the container, so a click on it never reaches picking / orbit.
+  const GIZMO_PAD = 12; // gap from the top-right corner
+  const GIZMO_R = 30; // arm length, CSS px
+  const BALL_R = 7;
+  const AXIS_COLORS = ['#e8615a', '#7fc24a', '#4c9ef0']; // x, y, z
+  interface GizmoBall {
+    axis: 0 | 1 | 2;
+    sign: 1 | -1;
+    x: number;
+    y: number;
+    depth: number; // camera-space z: larger = nearer the viewer
+  }
+  const gizmoOrigin = (W: number) => ({ cx: W - GIZMO_PAD - GIZMO_R, cy: GIZMO_PAD + GIZMO_R });
+  function gizmoBalls(W: number): GizmoBall[] {
+    const { cx, cy } = gizmoOrigin(W);
+    const inv = camera.quaternion.clone().invert(); // world direction → camera space
+    const out: GizmoBall[] = [];
+    for (const axis of [0, 1, 2] as const) {
+      for (const sign of [1, -1] as const) {
+        const v = new THREE.Vector3(axis === 0 ? sign : 0, axis === 1 ? sign : 0, axis === 2 ? sign : 0).applyQuaternion(inv);
+        out.push({ axis, sign, x: cx + v.x * (GIZMO_R - BALL_R), y: cy - v.y * (GIZMO_R - BALL_R), depth: v.z });
+      }
+    }
+    return out;
+  }
+  function drawGizmo(pen: Pen, W: number): void {
+    if (dims !== 3 || W < 160) return;
+    const { cx, cy } = gizmoOrigin(W);
+    for (const b of gizmoBalls(W).sort((p, q) => p.depth - q.depth)) {
+      // Far balls first, so the near ones overlap them (the depth cue).
+      pen.color(AXIS_COLORS[b.axis]);
+      if (b.sign === 1) {
+        pen.line(cx, cy, b.x, b.y);
+        pen.circle(b.x, b.y, BALL_R, true);
+        pen.font(9, true);
+        pen.color('#101010');
+        pen.text(['x', 'y', 'z'][b.axis], b.x, b.y, 'center', 'middle');
+      } else {
+        pen.circle(b.x, b.y, BALL_R - 1, false);
+      }
+    }
+  }
+  function onGizmoPointerDown(e: PointerEvent): void {
+    if (e.button !== 0 || dims !== 3) return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const W = rect.width;
+    if (W < 160) return;
+    let hit: GizmoBall | null = null;
+    for (const b of gizmoBalls(W)) {
+      if (Math.hypot(x - b.x, y - b.y) <= BALL_R + 2 && (!hit || b.depth > hit.depth)) hit = b;
+    }
+    if (!hit) return;
+    e.preventDefault();
+    e.stopPropagation();
+    doSnapAxis(hit.axis, hit.sign);
+  }
+  container.addEventListener('pointerdown', onGizmoPointerDown, true);
+
   function drawAxes(): void {
     const ctx = axisCtx;
     if (!ctx) return;
@@ -1394,6 +1619,7 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     const pen = new CanvasPen(ctx);
     paintGrid(pen, W, H); // grid first, so axis lines / ticks sit on top
     paintAxes(pen, W, H);
+    drawGizmo(pen, W);
     drawLabels(ctx, W, H);
   }
 
@@ -1519,15 +1745,51 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   const ro = new ResizeObserver(resize);
   ro.observe(container);
 
+  // Clip planes follow the camera distance, so there's no zoom limit: fixed planes
+  // (sized to the data) used to cut the points away when zooming far in or out.
+  // Kept proportional to the distance, which also keeps depth precision sane at any
+  // scale. `force` re-applies them immediately after a zoom step.
+  let lastClipDist = -1;
+  function updateClipPlanes(force = false): void {
+    const d = centerDist();
+    if (!(d > 0) || !Number.isFinite(d)) return;
+    if (!force && Math.abs(d - lastClipDist) <= lastClipDist * 0.01) return;
+    lastClipDist = d;
+    camera.near = d * 0.01;
+    // How DEEP the view reaches, which has to scale with the zoom in 3-D. Dots are a
+    // fixed screen size at any distance (that's the point-size rule), so without this
+    // a deep cloud paints the same dot soup no matter how far you zoom in: the
+    // frustum widens with depth and keeps sweeping in more far-away points. Reaching
+    // `12 * d` behind the target makes the visible slab shrink as you close in, so
+    // zooming actually reveals local structure — while a zoomed-OUT view (d large)
+    // still takes in the whole cloud via the 2 * radius term.
+    camera.far = d + Math.min(2 * bounds.radius, 12 * d);
+    camera.updateProjectionMatrix();
+  }
+
   let raf = 0;
   const tick = () => {
+    stepTween();
     controls.update();
+    updateClipPlanes();
     if (ortho) {
       syncOrtho();
       material.uniforms.uOrthoDist.value = centerDist();
     }
     decayBlips();
+    // A 2-D plot clips its points to the box inside the L-axes (the same rectangle as
+    // paintAxes2D / paintGrid2D), so dots never spill over the axis lines or ticks.
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    const clip2D = dims === 2 && store.getState().settings.showAxes && W >= 60 && H >= 40;
+    if (clip2D) {
+      renderer.setScissorTest(false);
+      renderer.clear();
+      renderer.setScissor(46, 26, W - 46 - 8, H - 26 - 30); // (x, y-from-bottom, w, h) in CSS px
+      renderer.setScissorTest(true);
+    }
     renderer.render(scene, activeCam());
+    if (clip2D) renderer.setScissorTest(false);
     drawAxes();
     raf = requestAnimationFrame(tick);
   };
@@ -1541,6 +1803,8 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     controls.removeEventListener('end', emitCameraMoved);
     clearOutline();
     for (const u of unsubs) u();
+    renderer.domElement.removeEventListener('wheel', onWheel);
+    container.removeEventListener('pointerdown', onGizmoPointerDown, true);
     renderer.domElement.removeEventListener('pointerdown', onPointerDown);
     renderer.domElement.removeEventListener('pointerup', onPointerUp);
     renderer.domElement.removeEventListener('pointermove', onPointerMove);

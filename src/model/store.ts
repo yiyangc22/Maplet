@@ -5,7 +5,15 @@
 
 import { create } from 'zustand';
 import type { Column, Dataset } from '../format/maplet';
-import { hasCategoryOverflow, parseRawMaplet, rebuildColumnAs } from '../format/maplet';
+import {
+  hasCategoryOverflow,
+  indexColumns,
+  nativeTarget,
+  parseRawMaplet,
+  rebuildColumnAs,
+  resolveTargetMap,
+  VARIABLE_MAP_INDEX,
+} from '../format/maplet';
 import { parseDatasetAsync } from '../format/parseAsync';
 import {
   assignmentFromInspect,
@@ -23,6 +31,8 @@ import {
   filtersFromSerial,
   filtersToSerial,
   viewStatesEqual,
+  type AxisRef,
+  type LayoutState,
   type PanelTarget,
   type ViewerSettings,
   type ViewState,
@@ -96,12 +106,12 @@ interface StoreState {
   visibleCount: number;
   selectedMask: Uint8Array | null;
 
-  // What each viewport shows (transient, not undoable). The main viewer shows the
-  // coordinate map `mainMap`; up to 3 bottom panels show `panels[…]`, each a map
-  // OR a 1-D numeric-variable histogram.
-  mainMap: number;
+  // What each viewport shows. Each is a PanelTarget: a coordinate map, or a custom
+  // X/Y/Z axis assignment (any variable or map-axis per axis). The layout lives in
+  // the ViewState (so panel changes are undoable) and is mirrored here for the UI.
+  mainTarget: PanelTarget;
   panels: PanelTarget[];
-  setMainMap(index: number): void;
+  setMainTarget(target: PanelTarget): void;
   setPanelView(slot: number, target: PanelTarget): void;
   addPanel(): void;
   removePanel(slot: number): void;
@@ -256,6 +266,41 @@ function maskUnselected(
   return { visible, count: c };
 }
 
+// --- panel target validation (per-axis panel assignment) -------------------
+// A saved / restored PanelTarget may reference a map or variable that no longer
+// exists (a preset applied onto a different dataset, or an older layout). These
+// keep only the parts that resolve against the CURRENT dataset.
+function refValid(ds: Dataset, r: AxisRef): boolean {
+  if (r.src === 'var') return ds.columnByKey.has(r.key);
+  const m = ds.maps.find((mm) => mm.index === r.index);
+  if (!m) return false;
+  return r.axis === 'x' || r.axis === 'y' || (r.axis === 'z' && m.dims === 3);
+}
+// Return a usable target, or null when it can't be shown (X or Y unresolvable). A
+// stale Z is dropped (→ 2-D) rather than voiding the whole panel.
+function validTarget(ds: Dataset, t: PanelTarget | undefined | null): PanelTarget | null {
+  if (!t) return null;
+  if (t.kind === 'map') return ds.maps.some((m) => m.index === t.index) ? t : null;
+  if (t.kind === 'hist') return ds.columnByKey.get(t.key)?.kind === 'continuous' ? t : null;
+  if (t.kind === 'axes') {
+    if (!refValid(ds, t.x) || !refValid(ds, t.y)) return null;
+    return { kind: 'axes', x: t.x, y: t.y, z: t.z && refValid(ds, t.z) ? t.z : null };
+  }
+  return null;
+}
+// The native-axes target of the dataset's primary map — the default main viewport.
+function primaryTarget(ds: Dataset): PanelTarget {
+  return nativeTarget(ds.maps.find((m) => m.index === ds.primaryMap) ?? ds.maps[0]);
+}
+// Read a (possibly legacy) saved layout's main target + panels against the dataset.
+function layoutMainTarget(ds: Dataset, layout: Partial<LayoutState> & { mainMap?: number }): PanelTarget {
+  const raw = layout.mainTarget ?? (typeof layout.mainMap === 'number' ? ({ kind: 'map', index: layout.mainMap } as PanelTarget) : null);
+  return validTarget(ds, raw) ?? primaryTarget(ds);
+}
+function layoutPanels(ds: Dataset, panels: PanelTarget[] | undefined): PanelTarget[] {
+  return (panels ?? []).map((t) => validTarget(ds, t)).filter((t): t is PanelTarget => !!t).slice(0, 3);
+}
+
 // Two camera poses count as "the same" when position, target and up all match
 // within a small relative epsilon — used to tell a real snap from a no-op re-snap
 // (snapping to the plane you're already on). Any non-finite value is treated as
@@ -296,7 +341,7 @@ export const useStore = create<StoreState>((set, get) => {
       labeledPoints: [...s.labeledPoints],
       tracedPoints: [...s.tracedPoints],
       settings: { ...s.settings, hiddenImages: [...s.settings.hiddenImages] },
-      layout: { mainMap: s.mainMap, panels: s.panels.map((t) => ({ ...t })) },
+      layout: { mainTarget: s.mainTarget, panels: s.panels },
     };
   };
 
@@ -322,12 +367,11 @@ export const useStore = create<StoreState>((set, get) => {
     const { visible, count } = maskUnselected(ds.n, base.visible, base.count, selection, get().hideUnselected);
     // Restore the panel layout too, but only when the snapshot carries one (older
     // presets / the initial default don't — they leave the live layout untouched).
+    // Targets that no longer resolve (a different-shaped dataset) are validated away.
     const layout = vs.layout
       ? {
-          mainMap: ds.maps.some((m) => m.index === vs.layout!.mainMap) ? vs.layout!.mainMap : ds.primaryMap,
-          panels: vs.layout!.panels
-            .filter((t) => (t.kind === 'map' ? ds.maps.some((m) => m.index === t.index) : ds.columnByKey.get(t.key)?.kind === 'continuous'))
-            .slice(0, 3),
+          mainTarget: layoutMainTarget(ds, vs.layout),
+          panels: layoutPanels(ds, vs.layout.panels),
         }
       : null;
     set({
@@ -348,7 +392,7 @@ export const useStore = create<StoreState>((set, get) => {
       visible,
       visibleCount: count,
       selectedMask: maskFrom(ds.n, selection),
-      ...(layout ? { mainMap: layout.mainMap, panels: layout.panels } : {}),
+      ...(layout ? { mainTarget: layout.mainTarget, panels: layout.panels } : {}),
     });
   };
 
@@ -379,13 +423,15 @@ export const useStore = create<StoreState>((set, get) => {
       assignPrompt: null, // the assignment modal (if any) is resolved before we get here
       lassoMode: false, // don't carry an active lasso into a freshly opened dataset
       hideUnselected: false, // and don't carry a "show selected only" isolate either
-      // Main viewer shows the primary map; auto-open a bottom panel for each
-      // additional coordinate map (up to 3), e.g. a UMAP alongside the tissue.
-      mainMap: ds.primaryMap,
+      // Main viewer shows the primary map (as its native axes); auto-open a bottom
+      // panel for each additional coordinate map (up to 3), e.g. a UMAP alongside the
+      // tissue. Native-axes targets resolve back to the real maps, so map 0 keeps its
+      // spatial overlays / images.
+      mainTarget: primaryTarget(ds),
       panels: ds.maps
         .filter((m) => m.index !== ds.primaryMap)
         .slice(0, 3)
-        .map((m) => ({ kind: 'map' as const, index: m.index })),
+        .map((m) => nativeTarget(m)),
       log: [],
       currentEntryId: -1,
     });
@@ -488,6 +534,26 @@ export const useStore = create<StoreState>((set, get) => {
     pushCmd(parsed.canonical, next);
   };
 
+  // Panel layout changes (main target, per-panel axes, add / remove) are undoable
+  // ViewState edits, but their targets (per-axis assignments) don't fit the string
+  // command grammar — so, like commitSelection, they mutate the ViewState directly
+  // and push a labelled history entry instead of going through parseCommand.
+  const commitLayout = (mut: (l: LayoutState) => LayoutState, label: string) => {
+    if (!get().dataset) return;
+    const cur = snapshot();
+    const next: ViewState = { ...cur, layout: mut({ mainTarget: get().mainTarget, panels: get().panels }) };
+    if (viewStatesEqual(cur, next)) return;
+    const idx = currentIdx();
+    if (idx >= 0 && get().log.slice(idx + 1).some((e) => e.snapshot)) set({ log: get().log.slice(0, idx + 1) });
+    // A queued camera pose (from a variable re-type or a session restore) belongs to
+    // the axes it was captured on. Changing a panel's axes remounts its viewport into
+    // a DIFFERENT coordinate space, where that pose would aim the camera at nothing —
+    // a view stuck at the old angle, or empty. Drop it and let the panel re-frame.
+    set({ pendingCamera: null });
+    applyViewState(next);
+    pushCmd(label, next);
+  };
+
   return {
     dataset: null,
     source: null,
@@ -525,7 +591,7 @@ export const useStore = create<StoreState>((set, get) => {
     visibleCount: 0,
     selectedMask: null,
     hideUnselected: false,
-    mainMap: 0,
+    mainTarget: { kind: 'map', index: 0 },
     panels: [],
     currentFile: null,
     lastSavedView: null,
@@ -690,7 +756,7 @@ export const useStore = create<StoreState>((set, get) => {
         sourceName: s.dataset?.sourceName,
         points: s.dataset?.n,
         view: snapshot(),
-        layout: { mainMap: s.mainMap, panels: s.panels },
+        layout: { mainTarget: s.mainTarget, panels: s.panels },
         camera: viewerControls.getCamera?.() ?? null,
       };
     },
@@ -720,7 +786,7 @@ export const useStore = create<StoreState>((set, get) => {
           manifestJson: JSON.stringify(manifestObj),
         },
         view: snapshot(),
-        layout: { mainMap: s.mainMap, panels: s.panels },
+        layout: { mainTarget: s.mainTarget, panels: s.panels },
         camera: viewerControls.getCamera?.() ?? null,
       };
     },
@@ -738,15 +804,10 @@ export const useStore = create<StoreState>((set, get) => {
       // The viewer applies this on (re)mount; a preset load onto the already-open
       // dataset applies it directly (see the browser branch in app/session.ts).
       set({ pendingCamera: v.camera ?? null });
-      // Restore the panel layout, dropping any target that no longer exists.
+      // Restore the panel layout, dropping any target that no longer resolves and
+      // reading the legacy `mainMap` form when present.
       if (v.layout) {
-        const mapIdx = new Set(ds.maps.map((m) => m.index));
-        const varKeys = new Set(ds.columns.filter((c) => c.kind === 'continuous').map((c) => c.key));
-        const mainMap = mapIdx.has(v.layout.mainMap) ? v.layout.mainMap : ds.primaryMap;
-        const panels = v.layout.panels
-          .filter((t) => (t.kind === 'map' ? mapIdx.has(t.index) : varKeys.has(t.key)))
-          .slice(0, 3);
-        set({ mainMap, panels });
+        set({ mainTarget: layoutMainTarget(ds, v.layout), panels: layoutPanels(ds, v.layout.panels) });
       }
     },
     bindFile: (file) => set({ currentFile: file, lastSavedView: get().buildSavedView() }),
@@ -812,7 +873,7 @@ export const useStore = create<StoreState>((set, get) => {
         return;
       }
       const columns = ds.columns.map((c) => (c.key === key ? newCol : c));
-      const columnByKey = new Map(columns.map((c) => [c.key, c] as const));
+      const columnByKey = indexColumns(columns, ds.maps, ds.pointIds);
       const nextDs: Dataset = { ...ds, columns, columnByKey };
 
       const filters = new Map(get().filters);
@@ -933,28 +994,34 @@ export const useStore = create<StoreState>((set, get) => {
     showAllTraces: () => dispatch(C.traces(true)),
     hideAllTraces: () => dispatch(C.tracesReset()),
 
-    // Panel layout is part of the undoable ViewState, so every change goes through
-    // a command (logged in the edit history, revertible with undo).
-    setMainMap: (index) => dispatch(C.panelMain(index)),
-    setPanelView: (slot, target) => dispatch(C.panelView(slot, target)),
+    // Panel layout is part of the undoable ViewState (see commitLayout).
+    setMainTarget: (target) => commitLayout((l) => ({ ...l, mainTarget: target }), 'panel: main axes'),
+    setPanelView: (slot, target) =>
+      commitLayout((l) => (slot < l.panels.length ? { ...l, panels: l.panels.map((p, i) => (i === slot ? target : p)) } : l), 'panel: axes'),
     addPanel: () => {
       const s = get();
       const ds = s.dataset;
       if (!ds || s.panels.length >= 3) return;
-      // Prefer the next coordinate map not already on screen; then the first
-      // numeric variable not shown; else just repeat the primary map.
-      const shownMaps = new Set<number>([s.mainMap]);
-      const shownVars = new Set<string>();
-      for (const t of s.panels) {
-        if (t.kind === 'map') shownMaps.add(t.index);
-        else shownVars.add(t.key);
+      // Prefer the next coordinate map not already shown (as native axes); else a
+      // custom scatter of the first two numeric variables; else repeat the primary.
+      const shownMaps = new Set<number>();
+      for (const t of [s.mainTarget, ...s.panels]) {
+        const m = resolveTargetMap(ds, t);
+        if (m && m.index !== VARIABLE_MAP_INDEX) shownMaps.add(m.index);
       }
       const nextMap = ds.maps.find((m) => !shownMaps.has(m.index));
-      if (nextMap) return dispatch(C.panelAdd({ kind: 'map', index: nextMap.index }));
-      const nextVar = ds.columns.find((c) => c.kind === 'continuous' && !shownVars.has(c.key));
-      dispatch(C.panelAdd(nextVar ? { kind: 'hist', key: nextVar.key } : { kind: 'map', index: ds.primaryMap }));
+      let target: PanelTarget;
+      if (nextMap) target = nativeTarget(nextMap);
+      else {
+        const conts = ds.columns.filter((c) => c.kind === 'continuous');
+        target =
+          conts.length >= 2
+            ? { kind: 'axes', x: { src: 'var', key: conts[0].key }, y: { src: 'var', key: conts[1].key }, z: null }
+            : primaryTarget(ds);
+      }
+      commitLayout((l) => (l.panels.length >= 3 ? l : { ...l, panels: [...l.panels, target] }), 'panel: add');
     },
-    removePanel: (slot) => dispatch(C.panelRemove(slot)),
+    removePanel: (slot) => commitLayout((l) => ({ ...l, panels: l.panels.filter((_, i) => i !== slot) }), 'panel: remove'),
 
     setLassoMode: (on) => set({ lassoMode: on }),
     toggleLassoMode: () => set((s) => ({ lassoMode: !s.lassoMode })),

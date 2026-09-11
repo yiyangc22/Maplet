@@ -114,7 +114,6 @@ export function DualRange({
   low,
   high,
   scale = 'linear',
-  format,
   onChange,
 }: {
   min: number;
@@ -122,7 +121,6 @@ export function DualRange({
   low: number;
   high: number;
   scale?: 'linear' | 'log';
-  format: (v: number) => string;
   onChange: (low: number, high: number) => void;
 }) {
   const STEPS = 1000;
@@ -170,10 +168,6 @@ export function DualRange({
             onChange(low, Math.max(v, low));
           }}
         />
-      </div>
-      <div className="mono-num flex justify-between text-[11px]" style={{ color: 'var(--muted)' }}>
-        <span>{format(low)}</span>
-        <span>{format(high)}</span>
       </div>
     </div>
   );

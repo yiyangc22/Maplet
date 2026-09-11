@@ -4,7 +4,7 @@
 import { useRef } from 'react';
 import { useStore } from '../model/store';
 import { COLORMAP_NAMES, colormapGradient } from '../format/colormaps';
-import { type Column, displayCategories, formatNumber, hasCategoryOverflow, type ResolvedCategory } from '../format/maplet';
+import { type Column, displayCategories, formatNumber, hasCategoryOverflow, type ResolvedCategory, variableOptions } from '../format/maplet';
 import type { Filter } from '../model/derive';
 import { Labeled, Select, Swatch } from '../ui/widgets';
 
@@ -24,12 +24,9 @@ export default function ColorControls() {
   // The colour variable's live filter, so the legend can dim hidden values and
   // toggle them through the shared (undoable) filter.
   const colFilter = col ? filters.get(col.key) : undefined;
-  // A categorical with thousands of distinct values can't be told apart by colour,
-  // so it isn't offered as a colour axis — unless it's already selected, to keep the
-  // dropdown consistent.
-  const colorables = dataset.columns.filter(
-    (c) => !(c.kind === 'categorical' && hasCategoryOverflow(c)) || c.key === colorKey,
-  );
+  // Every variable is offered — including the id and coordinate axes (as numbers).
+  // A very-high-cardinality categorical colours its top values and greys the rest.
+  const options = variableOptions(dataset);
   const rankedOverflow = col?.kind === 'ranked' && hasCategoryOverflow(col);
   const effectiveColormap =
     col && (col.kind === 'continuous' || col.kind === 'ranked') ? colormaps.get(col.key) ?? col.colormap : 'viridis';
@@ -45,10 +42,9 @@ export default function ColorControls() {
           tip="Which variable colors the points. Every variable in the file is available."
         >
           <option value="__uniform__">Uniform</option>
-          {colorables.map((c) => (
-            <option key={c.key} value={c.key}>
-              {c.label}
-              {c.kind === 'continuous' ? '  ⟨num⟩' : '  ⟨cat⟩'}
+          {options.map((o) => (
+            <option key={o.key} value={o.key}>
+              {o.label}
             </option>
           ))}
         </Select>

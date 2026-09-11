@@ -54,11 +54,11 @@ export const POINT_VERT = /* glsl */ `
     if (selHover) alpha = 1.0;
     vAlpha = alpha;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    // Perspective: size falls off with each point's own depth. Orthographic: use
-    // the single camera->target distance so on-screen size is constant across
-    // depth (grows only when zooming) — the true, undistorted flattened look.
-    float dist = (uOrtho > 0.5) ? uOrthoDist : max(0.0001, -mv.z);
-    float size = uSizePx * uPixelRatio * (uFocal / dist) * aSize;
+    // View-INDEPENDENT sizing: a point's on-screen size is a fixed number of pixels,
+    // so it never grows or shrinks with camera distance, zoom, or projection — the
+    // base-size slider (and any "size by" multiplier) is the only thing that scales
+    // it. (uFocal / uOrtho / uOrthoDist are no longer used for sizing.)
+    float size = uSizePx * uPixelRatio * aSize;
     if (aSelected > 0.5) size *= 1.9;
     if (aHover > 0.5) size *= 2.3;
     size *= 1.0 + aBlip * 1.7; // a fresh update briefly enlarges the point (radar ping)
