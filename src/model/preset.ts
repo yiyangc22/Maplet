@@ -17,6 +17,7 @@ export interface SavedCamera {
   position: [number, number, number];
   target: [number, number, number];
   up: [number, number, number];
+  fov?: number; // vertical field of view, degrees — narrower = magnified (3-D deep zoom); absent = default
 }
 
 // Which target each viewport was showing, so "the same view" restores the same

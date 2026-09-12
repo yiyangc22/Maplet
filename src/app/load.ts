@@ -32,8 +32,9 @@ async function run(fn: () => Promise<RawMaplet | null>, origin = 'open'): Promis
       return;
     }
     // Look up any saved view BEFORE the load overwrites session memory, then
-    // restore it so the user reopens the experiment where they left off.
-    const saved = await getSavedView(raw.source);
+    // restore it so the user reopens the experiment where they left off. The bundled
+    // sample is a demo, so it always opens in the same fresh default state.
+    const saved = raw.source.startsWith('sample:') ? null : await getSavedView(raw.source);
     await useStore.getState().loadRawAsync(raw, origin); // worker-parses large tables; origin = the command shown in the log
     if (useStore.getState().status !== 'ready') return; // load failed (error already surfaced)
     if (saved) useStore.getState().applySavedView(saved);

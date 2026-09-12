@@ -87,8 +87,11 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   container.appendChild(axisCanvas);
   const axisCtx = axisCanvas.getContext('2d');
 
+  // The lens's resting field of view. 3-D zoom narrows it past the dolly floor
+  // (magnification — see zoomAt); every "fit" / reset restores it.
+  const DEFAULT_FOV = 50;
   const camera = new THREE.PerspectiveCamera(
-    50,
+    DEFAULT_FOV,
     container.clientWidth / Math.max(1, container.clientHeight),
     bounds.radius * 0.002,
     bounds.radius * 60,
@@ -116,7 +119,10 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   // toward a FIXED target, which runs out of room; ours scales the whole view about
   // the cursor, so it never bottoms out or tops out.
   controls.enableZoom = false;
-  if (dims === 2) controls.enableRotate = false;
+  // Rotation is ours too (see the turntable below): OrbitControls' orbit is pinned to
+  // a pole, so it can't tilt past straight-over-the-top and drags stop following the
+  // mouse once `up` isn't the screen's vertical.
+  controls.enableRotate = false;
   // Let the app know when the perspective changed so the session can be saved
   // (only the main viewer drives the session autosave).
   const emitCameraMoved = () => {
@@ -130,7 +136,17 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   // the same FACTOR. Distance shrinks/grows geometrically and is never clamped, so
   // zoom is unlimited in both directions and feels identical at every scale — the
   // clip planes follow the distance (updateClipPlanes), so nothing gets cut away.
+  //
+  // In 3-D, flying the camera forward runs out: dots are a fixed pixel size, so once
+  // the camera nears the point it's zooming toward, the view converges on "standing
+  // at that point" and further zooming changes nothing. So past a floor distance (the
+  // reset framing distance, camera still outside the cloud) zoom-in MAGNIFIES instead
+  // — narrowing the field of view, like a telephoto lens — which never runs out and
+  // never clips anything away. Zooming out first undoes the magnification, then flies
+  // back out. A 2-D map is flat, so flying in IS magnifying: it keeps the plain dolly.
   const ZOOM_STEP = 1.15; // per wheel notch
+  const DOLLY_FLOOR = focal;
+  const tanHalf = (fovDeg: number) => Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2);
   const tmpDir = new THREE.Vector3();
   const tmpView = new THREE.Vector3();
   const tmpAnchor = new THREE.Vector3();
@@ -151,10 +167,36 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     tmpAnchor.copy(cos > 1e-3 ? camera.position.clone().addScaledVector(tmpDir, dist / cos) : controls.target);
     // Each offset must be measured BEFORE its vector is overwritten (`copy()` runs
     // before the argument is evaluated), so scale first, then place.
-    tmpOff.subVectors(camera.position, tmpAnchor).multiplyScalar(factor);
-    camera.position.copy(tmpAnchor).add(tmpOff);
-    tmpOff.subVectors(controls.target, tmpAnchor).multiplyScalar(factor);
-    controls.target.copy(tmpAnchor).add(tmpOff);
+    // Split the factor into a dolly part (move camera + target) and a lens part
+    // (field of view). `factor` < 1 zooms in.
+    let dolly = factor;
+    let lens = 1;
+    if (dims === 3) {
+      if (factor < 1) {
+        dolly = dist > DOLLY_FLOOR ? Math.max(factor, DOLLY_FLOOR / dist) : 1;
+        lens = factor / dolly;
+      } else {
+        lens = Math.max(1, Math.min(factor, tanHalf(DEFAULT_FOV) / tanHalf(camera.fov)));
+        dolly = factor / lens;
+      }
+    }
+    if (dolly !== 1) {
+      tmpOff.subVectors(camera.position, tmpAnchor).multiplyScalar(dolly);
+      camera.position.copy(tmpAnchor).add(tmpOff);
+      tmpOff.subVectors(controls.target, tmpAnchor).multiplyScalar(dolly);
+      controls.target.copy(tmpAnchor).add(tmpOff);
+    }
+    if (lens !== 1) {
+      // The visible half-height scales by `lens`; sliding the target (and camera) so
+      // the anchor's offset from it scales the same way keeps the anchor under the cursor.
+      tmpOff.subVectors(controls.target, tmpAnchor).multiplyScalar(lens).add(tmpAnchor).sub(controls.target);
+      controls.target.add(tmpOff);
+      camera.position.add(tmpOff);
+      const t = tanHalf(camera.fov) * lens;
+      // Back at (or rounding-close to) the resting lens → exactly the default.
+      camera.fov = t >= tanHalf(DEFAULT_FOV) * (1 - 1e-9) ? DEFAULT_FOV : THREE.MathUtils.radToDeg(2 * Math.atan(t));
+      camera.updateProjectionMatrix();
+    }
     updateClipPlanes(true);
     controls.update();
     emitCameraMoved();
@@ -169,6 +211,67 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     zoomAt(e.clientX, e.clientY, Math.pow(ZOOM_STEP, Math.sign(e.deltaY) * notches));
   }
   renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
+
+  // --- rotate (turntable) ----------------------------------------------------
+  // Blender's turntable: a right-drag sideways spins the view about the world Z axis,
+  // up/down tilts it about the screen's horizontal axis — with no limit, so you can
+  // keep going over the top. The camera's `up` turns with it (it stays the screen's
+  // vertical), which also keeps OrbitControls' own per-frame update from clamping.
+  const WORLD_UP = new THREE.Vector3(0, 0, 1);
+  const tmpQ = new THREE.Quaternion();
+  const tmpAxis = new THREE.Vector3();
+  let rotating: { x: number; y: number; yawSign: number } | null = null;
+  function rotateBy(dx: number, dy: number, yawSign: number): void {
+    const k = ((2 * Math.PI) / (renderer.domElement.clientHeight || 1)) * 0.9;
+    const offset = tmpOff.subVectors(camera.position, controls.target);
+    const dist = offset.length();
+    if (!(dist > 0)) return;
+    const up = camera.up;
+    const turn = (axis: THREE.Vector3, angle: number) => {
+      tmpQ.setFromAxisAngle(axis, angle);
+      offset.applyQuaternion(tmpQ);
+      up.applyQuaternion(tmpQ);
+    };
+    turn(WORLD_UP, -dx * k * yawSign); // sideways: spin about world Z
+    tmpAxis.crossVectors(up, offset).normalize(); // the screen's horizontal (camera right)
+    if (tmpAxis.lengthSq() > 0.5) turn(tmpAxis, -dy * k); // up/down: tilt over the top and beyond
+    // Re-square `up` against the view direction so rounding never accumulates.
+    offset.setLength(dist);
+    up.addScaledVector(offset, -up.dot(offset) / (dist * dist)).normalize();
+    camera.position.copy(controls.target).add(offset);
+    camera.lookAt(controls.target);
+    refreshControlsUp();
+    controls.update();
+  }
+  function onRotateDown(e: PointerEvent): void {
+    if (dims === 2 || e.button !== 2 || store.getState().lassoMode) return;
+    // Like Blender, a view that starts upside-down flips the sideways direction so the
+    // picture still follows the mouse. Latched per drag, so it can't reverse mid-drag.
+    const screenUpZ = camera.up.z;
+    rotating = { x: e.clientX, y: e.clientY, yawSign: screenUpZ < -1e-3 ? -1 : 1 };
+  }
+  function onRotateMove(e: PointerEvent): void {
+    if (!rotating) return;
+    if (!(e.buttons & 2)) {
+      // The release was lost (e.g. swallowed by the context menu) — end the drag.
+      rotating = null;
+      emitCameraMoved();
+      return;
+    }
+    const dx = e.clientX - rotating.x;
+    const dy = e.clientY - rotating.y;
+    rotating.x = e.clientX;
+    rotating.y = e.clientY;
+    if (dx || dy) rotateBy(dx, dy, rotating.yawSign);
+  }
+  function onRotateUp(e: PointerEvent): void {
+    if (!rotating || e.button !== 2) return;
+    rotating = null;
+    emitCameraMoved();
+  }
+  renderer.domElement.addEventListener('pointerdown', onRotateDown);
+  window.addEventListener('pointermove', onRotateMove);
+  window.addEventListener('pointerup', onRotateUp);
 
   // Orthographic (parallel-projection) camera for accurate flattened export. It
   // MIRRORS the perspective camera's pose every frame; OrbitControls always drives
@@ -200,13 +303,16 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   // viewerControls.setCamera.
   function setCameraPose(cam: SavedCamera): void {
     camera.up.set(cam.up[0], cam.up[1], cam.up[2]);
+    camera.fov = cam.fov != null && cam.fov > 0 && cam.fov <= DEFAULT_FOV ? cam.fov : DEFAULT_FOV;
     camera.position.set(cam.position[0], cam.position[1], cam.position[2]);
     controls.target.set(cam.target[0], cam.target[1], cam.target[2]);
     camera.updateProjectionMatrix();
+    refreshControlsUp();
     controls.update();
   }
 
   function fitDistance(radius: number): number {
+    camera.fov = DEFAULT_FOV; // every fit frames through the resting lens (drops any magnification)
     const vfov = THREE.MathUtils.degToRad(camera.fov);
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
     return (Math.max(radius / Math.sin(vfov / 2), radius / Math.sin(hfov / 2)) || focal) * 1.1;
@@ -214,9 +320,11 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
 
   function frameBounds() {
     controls.target.copy(fullCenter);
+    camera.fov = DEFAULT_FOV;
     camera.up.set(0, 1, 0);
     camera.position.copy(fullCenter).addScaledVector(defaultDir, focal);
     camera.updateProjectionMatrix();
+    refreshControlsUp();
     controls.update();
     emitCameraMoved();
   }
@@ -780,7 +888,8 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   function pickCell(clientX: number, clientY: number): number | null {
     setNdc(clientX, clientY);
     raycaster.setFromCamera(ndc, activeCam());
-    raycaster.params.Points!.threshold = controls.getDistance() * 0.012;
+    // A fixed on-screen pick radius: scales with distance AND with any lens magnification.
+    raycaster.params.Points!.threshold = controls.getDistance() * 0.012 * (tanHalf(camera.fov) / tanHalf(DEFAULT_FOV));
     const hits = raycaster.intersectObject(points, false);
     const vis = store.getState().visible;
     for (const h of hits) {
@@ -964,7 +1073,10 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   // it stays obvious how the new view relates to the old one. The tween is stepped
   // from `tick`; any wheel / drag cancels it.
   const SNAP_MS = 380;
-  const poseDummy = new THREE.Object3D();
+  // Must be a CAMERA: `lookAt` aims a camera's −z at the target but a plain Object3D's
+  // +z, which would mirror every pose (applyPose assumes camera convention) — the snap
+  // would land on the opposite side of the ball you clicked.
+  const poseDummy = new THREE.PerspectiveCamera();
   let camTween: {
     q0: THREE.Quaternion;
     q1: THREE.Quaternion;
@@ -1101,6 +1213,7 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
       position: [camera.position.x, camera.position.y, camera.position.z],
       target: [controls.target.x, controls.target.y, controls.target.z],
       up: [camera.up.x, camera.up.y, camera.up.z],
+      ...(camera.fov !== DEFAULT_FOV ? { fov: camera.fov } : {}),
     });
     viewerControls.setCamera = setCameraPose;
   }
@@ -1580,6 +1693,11 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
         pen.color('#101010');
         pen.text(['x', 'y', 'z'][b.axis], b.x, b.y, 'center', 'middle');
       } else {
+        // A dark disc under the ring, so a negative ball facing you HIDES the positive
+        // ball straight behind it — otherwise looking down −x still reads as +x.
+        pen.color('#161616');
+        pen.circle(b.x, b.y, BALL_R, true);
+        pen.color(AXIS_COLORS[b.axis]);
         pen.circle(b.x, b.y, BALL_R - 1, false);
       }
     }
@@ -1745,25 +1863,25 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
   const ro = new ResizeObserver(resize);
   ro.observe(container);
 
-  // Clip planes follow the camera distance, so there's no zoom limit: fixed planes
-  // (sized to the data) used to cut the points away when zooming far in or out.
-  // Kept proportional to the distance, which also keeps depth precision sane at any
-  // scale. `force` re-applies them immediately after a zoom step.
-  let lastClipDist = -1;
+  // Clip planes follow the camera, so there's no zoom limit: fixed planes (sized to
+  // the data) used to cut the points away when zooming far in or out. The near plane
+  // stays proportional to the distance (depth precision at any scale); the far plane
+  // always reaches past the far side of the whole cloud, wherever the camera is, so
+  // no point is ever clipped away behind what you're looking at. `force` re-applies
+  // them immediately after a zoom step.
+  let lastNear = -1;
+  let lastFar = -1;
   function updateClipPlanes(force = false): void {
     const d = centerDist();
     if (!(d > 0) || !Number.isFinite(d)) return;
-    if (!force && Math.abs(d - lastClipDist) <= lastClipDist * 0.01) return;
-    lastClipDist = d;
-    camera.near = d * 0.01;
-    // How DEEP the view reaches, which has to scale with the zoom in 3-D. Dots are a
-    // fixed screen size at any distance (that's the point-size rule), so without this
-    // a deep cloud paints the same dot soup no matter how far you zoom in: the
-    // frustum widens with depth and keeps sweeping in more far-away points. Reaching
-    // `12 * d` behind the target makes the visible slab shrink as you close in, so
-    // zooming actually reveals local structure — while a zoomed-OUT view (d large)
-    // still takes in the whole cloud via the 2 * radius term.
-    camera.far = d + Math.min(2 * bounds.radius, 12 * d);
+    const near = d * 0.01;
+    const far = Math.max(d, camera.position.distanceTo(fullCenter)) + 2 * bounds.radius;
+    if (!Number.isFinite(far)) return;
+    if (!force && Math.abs(near - lastNear) <= lastNear * 0.01 && Math.abs(far - lastFar) <= lastFar * 0.01) return;
+    lastNear = near;
+    lastFar = far;
+    camera.near = near;
+    camera.far = far;
     camera.updateProjectionMatrix();
   }
 
@@ -1804,6 +1922,9 @@ function setupScene(container: HTMLElement, dataset: Dataset, map: CoordMap, isM
     clearOutline();
     for (const u of unsubs) u();
     renderer.domElement.removeEventListener('wheel', onWheel);
+    renderer.domElement.removeEventListener('pointerdown', onRotateDown);
+    window.removeEventListener('pointermove', onRotateMove);
+    window.removeEventListener('pointerup', onRotateUp);
     container.removeEventListener('pointerdown', onGizmoPointerDown, true);
     renderer.domElement.removeEventListener('pointerdown', onPointerDown);
     renderer.domElement.removeEventListener('pointerup', onPointerUp);

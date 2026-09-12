@@ -310,7 +310,8 @@ function sameCamera(a: SavedCamera, b: SavedCamera): boolean {
   if (all.some((v) => !Number.isFinite(v))) return false;
   const scale = Math.max(1, Math.hypot(...a.position), Math.hypot(...b.position));
   const near = (u: number[], v: number[]) => u.every((x, i) => Math.abs(x - v[i]) <= scale * 1e-4);
-  return near(a.position, b.position) && near(a.target, b.target) && near(a.up, b.up);
+  const sameFov = Math.abs((a.fov ?? 50) - (b.fov ?? 50)) <= 1e-6 * (a.fov ?? 50);
+  return near(a.position, b.position) && near(a.target, b.target) && near(a.up, b.up) && sameFov;
 }
 
 export const useStore = create<StoreState>((set, get) => {
